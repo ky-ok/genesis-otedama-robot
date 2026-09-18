@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Large / generated artifacts
+checkpoints/*
+!checkpoints/.gitkeep
+videos/*.mp4
+videos/*.gif
+!videos/.gitkeep
+
+# Colab / Jupyter
+.ipynb_checkpoints/
+
+# Editors
+.vscode/
+.idea/
