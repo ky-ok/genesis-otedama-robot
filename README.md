@@ -25,8 +25,18 @@ checkpoints/        学習済みモデルの重み
 
 ## セットアップ（ローカル）
 
+システム環境に影響を与えないよう、[uv](https://github.com/astral-sh/uv) で仮想環境を作成してから依存関係をインストールします。
+
 ```bash
-pip install genesis-world
+uv venv .venv --python 3.11
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+動作確認:
+
+```bash
+python -c "import genesis as gs; print(gs.__version__)"
 ```
 
 学習はGoogle Colab上のGPUランタイムで実行します。詳細は `colab/` 以下のノートブックを参照してください。
