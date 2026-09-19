@@ -22,3 +22,13 @@ python scene_check.py
 ```
 
 実行すると `videos/scene_check.mp4` が生成されます。動作確認用のため、まだ実際にボールをキャッチする制御にはなっていません（トス&キャッチの獲得は次のステップでColab上のRLで学習します）。
+
+## train_smoke_test.py
+
+`genesis_juggling`（環境・VecEnv・学習コールバック）が最後まで壊れず動くかを、Mac上のCPUで極小規模(2並列・64ステップ)に確認するスモークテストです。本番の学習ではありません。
+
+```bash
+python train_smoke_test.py
+```
+
+`videos/smoke_test_run/` にチェックポイント・報酬曲線・ロールアウト動画が出力されれば、Colabに移植する前提のコードが壊れていないことが分かります。

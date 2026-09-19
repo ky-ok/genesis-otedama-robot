@@ -1,2 +1,5 @@
 genesis-world
 torch
+stable-baselines3
+gymnasium
+matplotlib

@@ -17,8 +17,8 @@ Physical AI Advanced課題の一環として作成しています。
 
 ```
 mac_dev/            Mac上でのシーン確認・デバッグ用スクリプト
-colab/              Google Colab用の学習ノートブック
-genesis_juggling/   共通コード（シーン定義、報酬関数、環境ラッパー等）
+colab/              Google Colab用の学習ノートブック(train_ppo.ipynb)
+genesis_juggling/   共通コード（環境, VecEnvラッパー, 学習コールバック）
 videos/             出力動画
 checkpoints/        学習済みモデルの重み
 ```

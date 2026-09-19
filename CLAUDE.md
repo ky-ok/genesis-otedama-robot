@@ -44,8 +44,13 @@
 1. **[完了]** Mac上でGenesisをインストールし、ロボット(2アーム)+玉(2個)のシーンのみ確認する（学習なし、固定/手動の動作で見た目を確認する段階）。`mac_dev/scene_check.py`
    - 2アーム構成は、Genesis同梱の**Franka Panda（URDF, `urdf/panda_bullet/panda.urdf`）を2台、向かい合わせに配置**する方式を採用した
    - Genesisには「bi-franka_panda」という胴体+両腕一体型のMJCFアセットも同梱されているが、このバージョン(Genesis 1.4.1)のMJCFパーサは`<worldbody>`配下にネストした`<include>`タグを解決できずロードに失敗したため不採用とした（body直下に置かれたincludeまでは解決するが、更に深い階層のincludeは非対応）
-2. シーン構築コードをColabに移植し、RL学習ループ（PPO、並列env、Google Driveへのチェックポイント保存）を追加する
-3. Colab上で学習を実行。学習曲線とロールアウト動画を見ながら報酬設計を調整する
+2. **[完了]** シーン構築コードをColabに移植し、RL学習ループ（PPO、並列env、Google Driveへのチェックポイント保存）を追加する
+   - `genesis_juggling/env.py`: `JugglingEnv`（Genesisのn_envsによるバッチ並列環境。観測・行動・報酬はtorchテンソル）
+   - `genesis_juggling/vec_env.py`: `JugglingVecEnv`（Stable-Baselines3のVecEnvへのラッパー）
+   - `genesis_juggling/training_utils.py`: `CheckpointVideoCallback`（後述の「3点セット」を定期保存するSB3コールバック）
+   - `colab/train_ppo.ipynb`: 上記を組み合わせたPPO学習ノートブック
+   - Mac上のCPUで`mac_dev/train_smoke_test.py`により、環境構築→PPO学習→チェックポイント/動画/報酬曲線の出力までのパイプライン全体が壊れていないことを極小規模で確認済み。ただしColab GPU上での実運用はまだ未検証
+3. ユーザー自身がColab上でPPO学習を実行し、Claudeと一緒にハイパーパラメータを調整しながら報酬設計を洗練させる
 4. 最終方策でロールアウトを録画する
 5. Macに動画を持ち帰り、倍速編集・テロップ付けを行い、1〜5分の最終動画に仕上げる
 
@@ -56,14 +61,25 @@
 - Colabのランタイムは揮発性（切断でファイル・変数が消える）なので、Google Driveをマウントして学習チェックポイントを定期保存し、再開可能にする
 - 生成した動画・学習済み重みはGoogle Drive経由でダウンロードし、Macに持ち帰る
 
+## パラメータ調整の相談の受け方
+
+RL学習の実行はユーザー自身がGoogle Colab上で行う。Claudeへの相談は以下の一式をアップロードしてもらう形を基本とする（動画だけだと、探索不足なのか報酬設計の問題なのか学習途中なだけなのかの判断が難しいため）。
+
+- `rollout_*.mp4`（現在の方策の挙動）
+- `reward_curve.png`（報酬の推移）
+- `hyperparams.json`（そのときのハイパーパラメータ）
+
+これらは`colab/train_ppo.ipynb`の`CheckpointVideoCallback`がGoogle Drive上に自動でまとめて出力する（`genesis_juggling/training_utils.py`）。
+
 ## リポジトリ構成
 
 ```
 CLAUDE.md           このファイル
 README.md           プロジェクト概要（GitHub公開用）
+requirements.txt    共通の依存関係（genesis-world, torch, stable-baselines3等）
 mac_dev/            Mac上でのシーン確認・デバッグ用スクリプト
-colab/              Google Colab用の学習ノートブック
-genesis_juggling/   Mac/Colab共通で使うコード（シーン定義、報酬関数、環境ラッパー等）
+colab/              Google Colab用の学習ノートブック(train_ppo.ipynb)
+genesis_juggling/   Mac/Colab共通で使うコード（env.py, vec_env.py, training_utils.py）
 videos/             出力動画
 checkpoints/         学習済みモデルの重み（.gitignore対象、サイズが大きいため）
 ```
