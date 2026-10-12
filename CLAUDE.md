@@ -72,6 +72,8 @@
 - `faulthandler.enable()`と`[メモリ:...]`出力、既定の小さい設定(`n_envs=64`)は診断用に維持
 - OSMesaでの撮影がColabで動くかは未検証。失敗したらエラーを共有してもらい、`record_video: False`で学習だけ先に進める
 
+続報(同日): 動画の事前チェックで別の異常終了 `LLVM ERROR: inconsistency in registered CommandLine options` が発生。直前にTensorFlowの起動ログが出ており、`stable_baselines3` → `torch.utils.tensorboard` → `tensorboard.compat.tf` → `import tensorflow` の経路(使い捨てvenvで確認)でTensorFlowが読み込まれ、そのLLVMがGenesis(quadrants)のLLVMと1プロセス内で衝突したと判断。`genesis_juggling/__init__.py`で`sys.modules["tensorflow"] = None`にして読み込みを抑止した(tensorboardは自前スタブにフォールバックし、SB3は問題なく動くことを確認済み)。このパッケージはSB3・Genesisより先にimportすること。Colab上での再確認は未了。
+
 ## パラメータ調整の相談の受け方
 
 RL学習の実行はユーザー自身がGoogle Colab上で行う。Claudeへの相談は以下の一式をアップロードしてもらう形を基本とする（動画だけだと、探索不足なのか報酬設計の問題なのか学習途中なだけなのかの判断が難しいため）。
