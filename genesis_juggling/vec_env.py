@@ -12,8 +12,8 @@ from .env import ACTION_DIM, JugglingEnv, OBS_DIM
 
 
 class JugglingVecEnv(VecEnv):
-    def __init__(self, n_envs: int, dt: float = 0.02, device=None):
-        self.env = JugglingEnv(n_envs=n_envs, dt=dt, device=device)
+    def __init__(self, n_envs: int, dt: float = 0.02, n_balls: int = 2, device=None):
+        self.env = JugglingEnv(n_envs=n_envs, dt=dt, n_balls=n_balls, device=device)
 
         observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32)
         action_space = spaces.Box(low=-1.0, high=1.0, shape=(ACTION_DIM,), dtype=np.float32)
@@ -29,14 +29,19 @@ class JugglingVecEnv(VecEnv):
         self._pending_actions = torch.as_tensor(actions, dtype=torch.float32, device=self.env.device)
 
     def step_wait(self):
-        obs, reward, done, _ = self.env.step(self._pending_actions)
+        obs, reward, done, env_info = self.env.step(self._pending_actions)
 
         infos = [{} for _ in range(self.num_envs)]
         done_idx = done.nonzero(as_tuple=True)[0]
         if len(done_idx) > 0:
             terminal_obs_np = self._to_numpy(obs)
+            truncated_np = env_info["truncated"].detach().cpu().numpy()
+            catches_np = env_info["catches"].detach().cpu().numpy()
             for i in done_idx.tolist():
                 infos[i]["terminal_observation"] = terminal_obs_np[i]
+                # 時間切れ(truncated)は失敗ではないので、SB3が価値をブートストラップできるように伝える
+                infos[i]["TimeLimit.truncated"] = bool(truncated_np[i])
+                infos[i]["episode_catches"] = float(catches_np[i])
 
             reset_obs = self.env.reset(envs_idx=done_idx)
             obs = obs.clone()

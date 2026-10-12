@@ -32,3 +32,14 @@ python train_smoke_test.py
 ```
 
 `videos/smoke_test_run/` にチェックポイント・報酬曲線・ロールアウト動画が出力されれば、Colabに移植する前提のコードが壊れていないことが分かります。
+
+## train_local.py
+
+Mac(CPU)上でPPO学習を実行します。M4 Proで256並列・毎秒約1.6万ステップ出るため、数百万〜1千万ステップなら数分〜十数分で回ります。Colabと同じ環境・コールバックを使うので、出力フォルダ(`runs/<日時>/`)の中身(チェックポイント・学習曲線・動画・ハイパーパラメータ)もColabと同じです。
+
+```bash
+python train_local.py --n-balls 1 --steps 5000000
+python train_local.py --n-balls 2 --steps 5000000 --resume ../runs/<前の実行>/model_final.zip   # 段階2: 玉2個へ引き継ぎ
+```
+
+報酬を変えたら、学習曲線だけでなく**動画で挙動を確認**してください(報酬の抜け道を使った「不正な」高スコアが出ることがあります)。

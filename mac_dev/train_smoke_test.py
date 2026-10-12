@@ -23,17 +23,18 @@ def main():
     from genesis_juggling.training_utils import CheckpointVideoCallback
     from genesis_juggling.vec_env import JugglingVecEnv
     from stable_baselines3 import PPO
+    from stable_baselines3.common.vec_env import VecMonitor
 
     if os.path.exists(OUTPUT_DIR):
         shutil.rmtree(OUTPUT_DIR)
 
-    vec_env = JugglingVecEnv(n_envs=2)
+    vec_env = VecMonitor(JugglingVecEnv(n_envs=2, n_balls=2))
     model = PPO("MlpPolicy", vec_env, n_steps=16, batch_size=16, n_epochs=1, verbose=1)
 
     callback = CheckpointVideoCallback(
         save_freq=32,
         output_dir=OUTPUT_DIR,
-        hyperparams={"n_steps": 16, "n_envs": 2, "dt": 0.02, "note": "mac smoke test, not real training"},
+        hyperparams={"n_steps": 16, "n_envs": 2, "dt": 0.02, "n_balls": 2, "note": "mac smoke test, not real training"},
         rollout_steps=20,
     )
 

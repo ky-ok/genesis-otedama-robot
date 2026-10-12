@@ -22,3 +22,6 @@ videos/smoke_test_run/
 # Editors
 .vscode/
 .idea/
+
+# Training outputs
+runs/
