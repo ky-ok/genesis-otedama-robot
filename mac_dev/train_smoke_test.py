@@ -33,7 +33,7 @@ def main():
     callback = CheckpointVideoCallback(
         save_freq=32,
         output_dir=OUTPUT_DIR,
-        hyperparams={"n_steps": 16, "n_envs": 2, "note": "mac smoke test, not real training"},
+        hyperparams={"n_steps": 16, "n_envs": 2, "dt": 0.02, "note": "mac smoke test, not real training"},
         rollout_steps=20,
     )
 

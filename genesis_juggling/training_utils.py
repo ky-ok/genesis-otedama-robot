@@ -9,25 +9,31 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+import subprocess
+import sys
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import torch
 from stable_baselines3.common.callbacks import BaseCallback
 
-from .env import ACTION_DIM, JugglingEnv
+import genesis as gs
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class CheckpointVideoCallback(BaseCallback):
-    """`save_freq`ステップごとに、以下をタイムスタンプ付きフォルダへまとめて保存する。
+    """`save_freq`ステップごとに、以下をステップ別フォルダへまとめて保存する。
 
-    - `model_<step>.zip`            : SB3チェックポイント
-    - `reward_curve.png`            : これまでの平均報酬の推移
-    - `rollout_<step>.mp4`          : 現在の方策による1エピソードのロールアウト動画
-    - `hyperparams.json`            : このコールバック作成時に渡されたハイパーパラメータ
+    - `model_<step>.zip`   : SB3チェックポイント
+    - `reward_curve.png`   : これまでの平均報酬の推移
+    - `rollout_<step>.mp4` : 現在の方策による1エピソードのロールアウト動画
+    - `video_error.log`    : 動画撮影に失敗した場合のみ。エラー内容
+
+    動画は別プロセス(`genesis_juggling.record_video`)で撮る。ヘッドレス描画で
+    ネイティブクラッシュが起きても学習プロセスは巻き込まれず、学習は続行される。
+    `hyperparams.json` は output_dir 直下に1つ保存する。
     """
 
     def __init__(
@@ -36,6 +42,8 @@ class CheckpointVideoCallback(BaseCallback):
         output_dir: str,
         hyperparams: dict,
         rollout_steps: int = 300,
+        record_video: bool = True,
+        video_timeout: int = 600,
         verbose: int = 1,
     ):
         super().__init__(verbose)
@@ -43,9 +51,10 @@ class CheckpointVideoCallback(BaseCallback):
         self.output_dir = output_dir
         self.hyperparams = hyperparams
         self.rollout_steps = rollout_steps
+        self.record_video = record_video
+        self.video_timeout = video_timeout
 
         self._reward_history: list[tuple[int, float]] = []
-        self._eval_env: JugglingEnv | None = None
         self._last_save_step = 0
 
     def _on_training_start(self) -> None:
@@ -69,12 +78,14 @@ class CheckpointVideoCallback(BaseCallback):
         run_dir = os.path.join(self.output_dir, f"step_{step:09d}")
         os.makedirs(run_dir, exist_ok=True)
 
-        self.model.save(os.path.join(run_dir, f"model_{step}.zip"))
+        model_path = os.path.join(run_dir, f"model_{step}.zip")
+        self.model.save(model_path)
         self._save_reward_curve(os.path.join(run_dir, "reward_curve.png"))
-        self._save_rollout_video(os.path.join(run_dir, f"rollout_{step}.mp4"))
+        if self.record_video:
+            self._save_rollout_video(model_path, run_dir, os.path.join(run_dir, f"rollout_{step}.mp4"))
 
         if self.verbose:
-            print(f"[CheckpointVideoCallback] saved checkpoint/video/curve to {run_dir}")
+            print(f"[CheckpointVideoCallback] saved checkpoint/curve/video to {run_dir}", flush=True)
 
     def _save_reward_curve(self, filename: str) -> None:
         if not self._reward_history:
@@ -89,15 +100,40 @@ class CheckpointVideoCallback(BaseCallback):
         fig.savefig(filename, dpi=120)
         plt.close(fig)
 
-    def _save_rollout_video(self, filename: str) -> None:
-        if self._eval_env is None:
-            self._eval_env = JugglingEnv(n_envs=1, camera=True)
+    def _save_rollout_video(self, model_path: str, run_dir: str, filename: str) -> None:
+        cmd = [
+            sys.executable,
+            "-m",
+            "genesis_juggling.record_video",
+            "--model",
+            model_path,
+            "--out",
+            filename,
+            "--steps",
+            str(self.rollout_steps),
+            "--backend",
+            "cpu" if gs.backend == gs.cpu else "gpu",
+            "--dt",
+            str(self.hyperparams.get("dt", 0.02)),
+        ]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = REPO_ROOT + os.pathsep + env.get("PYTHONPATH", "")
 
-        def policy_fn(obs_t):
-            obs_np = obs_t.detach().cpu().numpy()
-            action_np, _ = self.model.predict(obs_np, deterministic=True)
-            return torch.as_tensor(action_np, dtype=torch.float32, device=self._eval_env.device).reshape(
-                1, ACTION_DIM
+        try:
+            proc = subprocess.run(
+                cmd, env=env, capture_output=True, text=True, timeout=self.video_timeout, cwd=REPO_ROOT
             )
+            ok = proc.returncode == 0 and os.path.exists(filename)
+            detail = f"returncode={proc.returncode}\n--- stdout ---\n{proc.stdout[-4000:]}\n--- stderr ---\n{proc.stderr[-4000:]}"
+        except subprocess.TimeoutExpired:
+            ok = False
+            detail = f"timed out after {self.video_timeout}s"
 
-        self._eval_env.record_rollout(policy_fn, n_steps=self.rollout_steps, filename=filename)
+        if not ok:
+            with open(os.path.join(run_dir, "video_error.log"), "w") as f:
+                f.write(detail)
+            print(
+                f"[CheckpointVideoCallback] WARNING: video recording failed (training continues). "
+                f"See {os.path.join(run_dir, 'video_error.log')}",
+                flush=True,
+            )
