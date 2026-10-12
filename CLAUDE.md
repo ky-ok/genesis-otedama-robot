@@ -63,12 +63,14 @@
 
 ## Colabで「不明な理由によりセッションがクラッシュ」したとき
 
-2026-10-12に`model.learn()`実行中にこの事象が発生した。共有された`app.log`(Jupyterサーバログ)には、Pythonの例外なしに「カーネルが突然死して自動再起動された」記録しかなく、原因は未特定。以下の対策を入れてある。
+2026-10-12に発生。`faulthandler`のスタックから**原因を特定済み**: Colab(Python 3.13, L4)で`JugglingEnv.__init__`の`scene.build()`中、Genesisのビジュアライザが作るオフスクリーン描画用のEGLコンテキスト初期化(`genesis/ext/pyrender/platforms/egl.py` `init_context`)でSegfaultしていた。Genesisはカメラもビューアもないシーンでもbuild時にGLコンテキストを作る。
 
-- 動画撮影(ヘッドレス描画)は学習プロセスの外、サブプロセス(`genesis_juggling/record_video.py`)で行う。描画系のネイティブクラッシュが学習を巻き込まない。失敗時は`video_error.log`が残り、学習は続行する
-- ノートブック冒頭で`faulthandler.enable()`。SIGSEGV等ならPythonのスタックが`app.log`に残る。何も残らず再起動だけなら、SIGKILL(OOM等)の可能性が高い
-- 既定を小さい設定(`n_envs=64`, `total_timesteps=300_000`)にし、動作確認後に増やす運用にした。各段階でRAM/GPUメモリを`[メモリ:...]`として出力する
-- 再発したら、`app.log`(ランタイムログ)と、落ちたセル・直前の`[メモリ:...]`出力を共有してもらい、そこから原因を絞る
+対策(いずれもMac CPUでの動作確認のみ。Colab上での再確認は未了):
+- 学習用環境(camera=False)は、`scene.build()`の間だけ`pyrender.OffscreenRenderer`を無効化し、GLに一切触れない(`env.py`の`_without_offscreen_renderer`)。Macで`_renderer is None`で学習が回ることを確認済み
+- 動画撮影は別プロセス(`genesis_juggling/record_video.py`)で、EGLではなくソフトウェア描画のOSMesa(`PYOPENGL_PLATFORM=osmesa`, `apt: libosmesa6`)で行う。失敗しても学習は続行し、`video_error.log`が残る
+- ノートブックに、学習前の動画撮影事前チェックセル(別プロセス)を追加
+- `faulthandler.enable()`と`[メモリ:...]`出力、既定の小さい設定(`n_envs=64`)は診断用に維持
+- OSMesaでの撮影がColabで動くかは未検証。失敗したらエラーを共有してもらい、`record_video: False`で学習だけ先に進める
 
 ## パラメータ調整の相談の受け方
 

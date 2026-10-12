@@ -13,7 +13,7 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--model", default=None, help="省略するとランダム方策で撮影する(描画の動作確認用)")
     parser.add_argument("--out", required=True)
     parser.add_argument("--steps", type=int, default=300)
     parser.add_argument("--backend", choices=["cpu", "gpu"], default="gpu")
@@ -29,10 +29,12 @@ def main():
 
     from genesis_juggling.env import ACTION_DIM, JugglingEnv
 
-    model = PPO.load(args.model, device="cpu")
+    model = PPO.load(args.model, device="cpu") if args.model else None
     env = JugglingEnv(n_envs=1, dt=args.dt, camera=True)
 
     def policy_fn(obs_t):
+        if model is None:
+            return torch.rand((1, ACTION_DIM), device=env.device) * 2 - 1
         action_np, _ = model.predict(obs_t.detach().cpu().numpy(), deterministic=True)
         return torch.as_tensor(action_np, dtype=torch.float32, device=env.device).reshape(1, ACTION_DIM)
 

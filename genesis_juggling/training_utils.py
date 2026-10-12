@@ -43,7 +43,8 @@ class CheckpointVideoCallback(BaseCallback):
         hyperparams: dict,
         rollout_steps: int = 300,
         record_video: bool = True,
-        video_timeout: int = 600,
+        video_timeout: int = 900,
+        gl_platform: str | None = "auto",
         verbose: int = 1,
     ):
         super().__init__(verbose)
@@ -53,6 +54,10 @@ class CheckpointVideoCallback(BaseCallback):
         self.rollout_steps = rollout_steps
         self.record_video = record_video
         self.video_timeout = video_timeout
+        # Linuxのヘッドレス環境ではEGL初期化がSegfaultしうるため、動画撮影はソフトウェア描画のOSMesaを使う
+        if gl_platform == "auto":
+            gl_platform = "osmesa" if sys.platform == "linux" else None
+        self.gl_platform = gl_platform
 
         self._reward_history: list[tuple[int, float]] = []
         self._last_save_step = 0
@@ -118,6 +123,8 @@ class CheckpointVideoCallback(BaseCallback):
         ]
         env = dict(os.environ)
         env["PYTHONPATH"] = REPO_ROOT + os.pathsep + env.get("PYTHONPATH", "")
+        if self.gl_platform:
+            env["PYOPENGL_PLATFORM"] = self.gl_platform
 
         try:
             proc = subprocess.run(

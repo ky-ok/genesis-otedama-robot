@@ -9,10 +9,13 @@ Mac(CPU、動作確認用の小規模並列)とGoogle Colab(GPU、本番の大�
 
 from __future__ import annotations
 
+import contextlib
+
 import numpy as np
 import torch
 
 import genesis as gs
+from genesis.ext import pyrender
 
 ARM_OFFSET = 0.5
 READY_POSE = [0.0, -0.3, 0.0, -2.2, 0.0, 2.0, 0.79]
@@ -27,6 +30,22 @@ ACTION_DIM = N_ARM_DOFS * 2  # 左腕7 + 右腕7 の目標角度に対する増�
 MAX_DELTA = 0.08  # 1制御ステップあたりの関節目標角の最大変化量[rad]
 DROP_HEIGHT = 0.05  # これより低くなったら「落とした」とみなす床上の高さ
 BALL_START_HEIGHT = 0.55
+
+
+@contextlib.contextmanager
+def _without_offscreen_renderer():
+    """scene.build()中だけ、オフスクリーン描画用のGLコンテキスト作成を省略する。
+
+    Genesisは、カメラもビューアも無いシーンでもbuild時にEGL等のGLコンテキストを作る。
+    Colabのヘッドレス環境ではこのEGL初期化でSegfaultしたため、描画しない学習用環境では
+    GLに一切触れないようにする。
+    """
+    original = pyrender.OffscreenRenderer
+    pyrender.OffscreenRenderer = lambda *args, **kwargs: None
+    try:
+        yield
+    finally:
+        pyrender.OffscreenRenderer = original
 
 
 class JugglingEnv:
@@ -88,7 +107,11 @@ class JugglingEnv:
                 GUI=False,
             )
 
-        self.scene.build(n_envs=n_envs)
+        if camera or show_viewer:
+            self.scene.build(n_envs=n_envs)
+        else:
+            with _without_offscreen_renderer():
+                self.scene.build(n_envs=n_envs)
 
         self.left_dofs = [self.robot_left.get_joint(f"panda_joint{i}").dofs_idx_local[0] for i in range(1, 8)]
         self.right_dofs = [self.robot_right.get_joint(f"panda_joint{i}").dofs_idx_local[0] for i in range(1, 8)]
