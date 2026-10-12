@@ -12,6 +12,7 @@ Colab(GPU)と同じ環境・同じコールバックを使うので、出力フ�
 import argparse
 import datetime
 import json
+import math
 import os
 import sys
 
@@ -32,9 +33,11 @@ def main():
     p.add_argument("--learning-rate", type=float, default=3e-4)
     p.add_argument("--ent-coef", type=float, default=0.0)
     p.add_argument("--log-std-init", type=float, default=-1.0)
+    p.add_argument("--gamma", type=float, default=0.995, help="割引率。0.995だと約200ステップ(4秒)先まで見る")
     p.add_argument("--gap-start", type=float, default=0.20, help="着地成功に必要なお盆の最低間隔の初期値[m](カリキュラム)")
     p.add_argument("--gap-end", type=float, default=0.42, help="同・最終値[m]")
     p.add_argument("--gap-fraction", type=float, default=0.6, help="学習全体のこの割合の時点で最終値にする")
+    p.add_argument("--reset-std", type=float, default=None, help="続きから学習するとき、行動ノイズの標準偏差をこの値に戻す(探索が枯れたとき用。例 0.15)")
     p.add_argument("--resume", default=None, help="続きから学習するチェックポイント(.zip)")
     p.add_argument("--no-video", action="store_true")
     p.add_argument("--out", default=None)
@@ -61,11 +64,12 @@ def main():
         "n_steps": a.n_steps,
         "batch_size": a.n_envs * a.n_steps // 4,
         "n_epochs": 10,
-        "gamma": 0.99,
+        "gamma": a.gamma,
         "gae_lambda": 0.95,
         "clip_range": 0.2,
         "ent_coef": a.ent_coef,
         "log_std_init": a.log_std_init,
+        "reset_std": a.reset_std,
         "net_arch": [256, 256],
         "gap_start": a.gap_start,
         "gap_end": a.gap_end,
@@ -79,6 +83,11 @@ def main():
     vec_env = VecMonitor(JugglingVecEnv(n_envs=a.n_envs, dt=hyper["dt"], n_balls=a.n_balls))
     if a.resume:
         model = PPO.load(a.resume, env=vec_env, device="cpu")
+        model.gamma = a.gamma
+        model.rollout_buffer.gamma = a.gamma
+        if a.reset_std is not None:
+            model.policy.log_std.data.fill_(math.log(a.reset_std))
+        model.ent_coef = a.ent_coef
     else:
         model = PPO(
             "MlpPolicy",

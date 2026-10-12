@@ -47,7 +47,7 @@ MAX_DELTA = 0.1  # 1制御ステップあたりの関節目標角の最大変化
 MAX_OFFSET = 0.9  # 基準姿勢からの関節目標角の最大ずれ[rad]
 
 # --- エピソード ----------------------------------------------------------
-MAX_EPISODE_STEPS = 500
+MAX_EPISODE_STEPS = 1500  # 30秒。長く続けることを学習させ、動画も長く撮れるようにする
 TRAY_READY_Z = 0.602  # 基準姿勢でのお盆中心の高さ
 DROP_Z = 0.35  # 玉がこの高さより低くなったら「落とした」
 WORKSPACE_X = 1.2
@@ -64,7 +64,13 @@ CLOSE_PENALTY = 0.1  # お盆がMIN_TRAY_GAPより近づいたとき、近づい
 CATCH_BONUS = 10.0
 CATCH_XY = 0.07  # 着地成功とみなすお盆中心からの水平距離[m]
 CATCH_SPEED = 0.6  # 着地成功とみなす玉の速さの上限[m/s]
-DROP_PENALTY = 2.0
+DROP_PENALTY = 15.0  # 落とすと数回分の成功が帳消しになる重さにして、安全に長く続けることを優先させる
+STACK_XY = 0.09  # 2個の玉が「同じお盆に載っている」とみなす、お盆中心からの水平距離[m]
+STACK_PENALTY = 0.05  # 2個が同じお盆に載っている間の1ステップあたりの減点。着地成功も認めない
+STREAK_GAIN = 0.1  # 落とさず成功を重ねるごとに、着地成功の報酬を増やす割合(上限 STREAK_CAP 回分)
+STREAK_CAP = 10
+RESET_JOINT_NOISE = 0.03  # リセット時の関節角のばらつき[rad]
+RESET_BALL_NOISE = 0.01  # リセット時の玉の水平位置のばらつき[m]
 ACTION_PENALTY = 0.002
 
 
@@ -111,8 +117,12 @@ class JugglingEnv:
         show_viewer: bool = False,
         device=None,
         camera: bool = False,
+        max_episode_steps: int = MAX_EPISODE_STEPS,
+        reset_noise: bool = True,
     ):
         assert n_balls in (1, 2)
+        self.max_episode_steps = max_episode_steps
+        self.reset_noise = reset_noise
         self.n_envs = n_envs
         self.dt = dt
         self.n_balls = n_balls
@@ -200,6 +210,7 @@ class JugglingEnv:
         self._launch_x = torch.zeros((n, 2), device=self.device)
         self._step_count = torch.zeros(n, dtype=torch.long, device=self.device)
         self._episode_catches = torch.zeros(n, device=self.device)
+        self.last_stacked = torch.zeros(n, dtype=torch.bool, device=self.device)
 
         self.reset()
 
@@ -222,15 +233,17 @@ class JugglingEnv:
         if n == 0:
             return self._get_obs()
 
-        zeros_off = torch.zeros((n, N_ACTIVE), device=self.device)
-        self._left_off[envs_idx] = zeros_off
-        self._right_off[envs_idx] = zeros_off
-        pose = self._targets(zeros_off)
+        scale = RESET_JOINT_NOISE if self.reset_noise else 0.0
+        left_off = (torch.rand((n, N_ACTIVE), device=self.device) * 2 - 1) * scale
+        right_off = (torch.rand((n, N_ACTIVE), device=self.device) * 2 - 1) * scale
+        self._left_off[envs_idx] = left_off
+        self._right_off[envs_idx] = right_off
 
-        for robot, dofs, fdofs in (
-            (self.robot_left, self.left_dofs, self.left_finger_dofs),
-            (self.robot_right, self.right_dofs, self.right_finger_dofs),
+        for robot, dofs, fdofs, off in (
+            (self.robot_left, self.left_dofs, self.left_finger_dofs, left_off),
+            (self.robot_right, self.right_dofs, self.right_finger_dofs, right_off),
         ):
+            pose = self._targets(off)
             robot.set_dofs_position(pose, dofs_idx_local=dofs, envs_idx=envs_idx)
             robot.set_dofs_position(self._finger_zero[:n], dofs_idx_local=fdofs, envs_idx=envs_idx)
             robot.control_dofs_position(pose, dofs_idx_local=dofs, envs_idx=envs_idx)
@@ -239,6 +252,10 @@ class JugglingEnv:
         tray_l = self._tray_center(self.robot_left, self.left_link7, envs_idx)
         tray_r = self._tray_center(self.robot_right, self.right_link7, envs_idx)
         rest = torch.tensor([0.0, 0.0, BALL_REST_DZ], device=self.device)
+        jitter = torch.zeros((n, 3), device=self.device)
+        if self.reset_noise:
+            jitter[:, :2] = (torch.rand((n, 2), device=self.device) * 2 - 1) * RESET_BALL_NOISE
+        rest = rest + jitter
         tgt = torch.tensor([1.0, 0.0], device=self.device).repeat(n, 1)  # 玉aは左→右、玉bは右→左
         if self.n_balls == 2:
             self.ball_a.set_pos(tray_l + rest, envs_idx=envs_idx)
@@ -283,7 +300,7 @@ class JugglingEnv:
         self._step_count += 1
 
         reward, dropped = self._compute_reward(action)
-        truncated = (self._step_count >= MAX_EPISODE_STEPS) & ~dropped
+        truncated = (self._step_count >= self.max_episode_steps) & ~dropped
         done = dropped | truncated
         obs = self._get_obs()
         info = {"truncated": truncated, "catches": self._episode_catches.clone()}
@@ -360,6 +377,15 @@ class JugglingEnv:
             & self._ball_active.view(1, 2)
         )
 
+        # 2個が同じお盆に載っている状態(1個ずつ交差させず、まとめて運ぶ抜け道)
+        rel_l = ball_pos - tray_l.unsqueeze(1)
+        rel_r = ball_pos - tray_r.unsqueeze(1)
+        in_l = (torch.linalg.norm(rel_l[:, :, :2], dim=-1) < STACK_XY) & (rel_l[:, :, 2] > -0.02) & (rel_l[:, :, 2] < 0.10)
+        in_r = (torch.linalg.norm(rel_r[:, :, :2], dim=-1) < STACK_XY) & (rel_r[:, :, 2] > -0.02) & (rel_r[:, :, 2] < 0.10)
+        stacked = (in_l.all(-1) | in_r.all(-1)) & (self.n_balls == 2)
+        caught = caught & ~stacked.unsqueeze(-1)
+        self.last_stacked = stacked
+
         # 成功した玉は目標を元のお盆へ切り替える。距離の基準も切り替え後に取り直し、報酬が飛ばないようにする
         self._tgt = torch.where(caught, 1.0 - self._tgt, self._tgt)
         self._apex = torch.where(caught, torch.zeros_like(self._apex), self._apex)
@@ -367,6 +393,7 @@ class JugglingEnv:
         tray_tgt = self._target_tray(tray_l, tray_r)
         dist_after = torch.linalg.norm(ball_pos - tray_tgt, dim=-1)
         self._prev_dist = dist_after
+        streak_bonus = 1.0 + STREAK_GAIN * torch.clamp(self._episode_catches, max=STREAK_CAP)  # 成功前の連続成功数で決める
         self._episode_catches += caught.float().sum(-1)
 
         out = (
@@ -379,8 +406,9 @@ class JugglingEnv:
         reward = (
             W_PROGRESS * progress.sum(-1)
             + W_APEX * apex_gain.sum(-1)
-            + CATCH_BONUS * caught.float().sum(-1)
+            + CATCH_BONUS * streak_bonus * caught.float().sum(-1)
             - DROP_PENALTY * dropped.float()
+            - STACK_PENALTY * stacked.float()
             - CLOSE_PENALTY * torch.clamp(self.min_tray_gap - tray_gap, min=0.0)
             - ACTION_PENALTY * (action**2).sum(-1)
         )

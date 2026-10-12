@@ -7,6 +7,7 @@ Genesis同梱の panda.urdf はメッシュを `package://meshes/...` と相対�
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import tempfile
 
@@ -17,30 +18,41 @@ import genesis as gs
 TRAY_XYZ = (0.1106, -0.1117, 0.0359)
 TRAY_RPY = (3.1416, -0.1, -0.79)
 
-TRAY_SIZE = 0.16  # 一辺[m]
-TRAY_WALL_H = 0.03  # 縁の高さ[m]
+# すり鉢型のお盆: 平らな底(一辺TRAY_BASE)と、外側へ向かって立ち上がる4枚の斜面からなる。
+# 玉が少しずれて着地しても、斜面を転がって中央に集まり、縁から飛び出しにくい。
+TRAY_BASE = 0.07  # 底の一辺[m](玉の直径6cmより少し広いだけ。玉が中央に集まる)
+TRAY_RIM = 0.19  # 上端の一辺[m]
+TRAY_HEIGHT = 0.05  # 底から上端までの高さ[m]
 TRAY_THICK = 0.01
-TRAY_WALL_T = 0.01
 
 
-def _box(size, xyz, rgba_name):
+def _box(size, xyz, rpy, rgba_name):
     sx, sy, sz = size
     x, y, z = xyz
+    r, p, yw = rpy
     geom = f'<geometry><box size="{sx} {sy} {sz}"/></geometry>'
-    visual = f'<visual><origin xyz="{x} {y} {z}" rpy="0 0 0"/>{geom}<material name="{rgba_name}"/></visual>'
-    collision = f'<collision><origin xyz="{x} {y} {z}" rpy="0 0 0"/>{geom}</collision>'
+    origin = f'<origin xyz="{x} {y} {z}" rpy="{r} {p} {yw}"/>'
+    visual = f"<visual>{origin}{geom}<material name=\"{rgba_name}\"/></visual>"
+    collision = f"<collision>{origin}{geom}</collision>"
     return visual + collision
 
 
 def _tray_xml() -> str:
-    half = TRAY_SIZE / 2 - TRAY_WALL_T / 2
-    wall_z = TRAY_THICK / 2 + TRAY_WALL_H / 2
+    half_base = TRAY_BASE / 2
+    half_rim = TRAY_RIM / 2
+    run = half_rim - half_base  # 斜面の水平方向の広がり
+    length = math.hypot(run, TRAY_HEIGHT)  # 斜面の長さ
+    tilt = math.atan2(TRAY_HEIGHT, run)  # 水平からの傾き
+    mid = (half_base + half_rim) / 2  # 斜面の中心の、中心軸からの距離
+    z = TRAY_THICK / 2 + TRAY_HEIGHT / 2
     parts = [
-        _box((TRAY_SIZE, TRAY_SIZE, TRAY_THICK), (0, 0, 0), "tray_mat"),
-        _box((TRAY_WALL_T, TRAY_SIZE, TRAY_WALL_H), (half, 0, wall_z), "tray_mat"),
-        _box((TRAY_WALL_T, TRAY_SIZE, TRAY_WALL_H), (-half, 0, wall_z), "tray_mat"),
-        _box((TRAY_SIZE, TRAY_WALL_T, TRAY_WALL_H), (0, half, wall_z), "tray_mat"),
-        _box((TRAY_SIZE, TRAY_WALL_T, TRAY_WALL_H), (0, -half, wall_z), "tray_mat"),
+        _box((TRAY_BASE, TRAY_BASE, TRAY_THICK), (0, 0, 0), (0, 0, 0), "tray_mat"),
+        # +x / -x の斜面(y方向に長い)
+        _box((length, TRAY_RIM, TRAY_THICK), (mid, 0, z), (0, -tilt, 0), "tray_mat"),
+        _box((length, TRAY_RIM, TRAY_THICK), (-mid, 0, z), (0, tilt, 0), "tray_mat"),
+        # +y / -y の斜面(x方向に長い)
+        _box((TRAY_RIM, length, TRAY_THICK), (0, mid, z), (tilt, 0, 0), "tray_mat"),
+        _box((TRAY_RIM, length, TRAY_THICK), (0, -mid, z), (-tilt, 0, 0), "tray_mat"),
     ]
     xyz = " ".join(str(v) for v in TRAY_XYZ)
     rpy = " ".join(str(v) for v in TRAY_RPY)
