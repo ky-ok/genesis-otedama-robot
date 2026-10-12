@@ -67,6 +67,8 @@ CATCH_SPEED = 0.6  # 着地成功とみなす玉の速さの上限[m/s]
 DROP_PENALTY = 15.0  # 落とすと数回分の成功が帳消しになる重さにして、安全に長く続けることを優先させる
 STACK_XY = 0.09  # 2個の玉が「同じお盆に載っている」とみなす、お盆中心からの水平距離[m]
 STACK_PENALTY = 0.05  # 2個が同じお盆に載っている間の1ステップあたりの減点。着地成功も認めない
+IDLE_GRACE = 150  # 最後の成功からこのステップ数(3秒)を超えて成功が無いと「じっとしている」とみなす
+IDLE_PENALTY = 0.05  # じっとしている間の1ステップあたりの減点。「落とさないが何もしない」停滞状態を避けさせる
 STREAK_GAIN = 0.1  # 落とさず成功を重ねるごとに、着地成功の報酬を増やす割合(上限 STREAK_CAP 回分)
 STREAK_CAP = 10
 RESET_JOINT_NOISE = 0.03  # リセット時の関節角のばらつき[rad]
@@ -119,6 +121,7 @@ class JugglingEnv:
         camera: bool = False,
         max_episode_steps: int = MAX_EPISODE_STEPS,
         reset_noise: bool = True,
+        realtime_factor: float = 1.0,
     ):
         assert n_balls in (1, 2)
         self.max_episode_steps = max_episode_steps
@@ -131,6 +134,8 @@ class JugglingEnv:
         self.scene = gs.Scene(
             show_viewer=show_viewer,
             sim_options=gs.options.SimOptions(dt=dt),
+            # 動画撮影時の再生速度。2.0なら、実時間の2倍速で再生される動画になる(録画は1ステップに最大1フレーム)
+            viewer_options=gs.options.ViewerOptions(realtime_factor=realtime_factor),
         )
         self.scene.add_entity(gs.morphs.Plane())
 
@@ -211,6 +216,7 @@ class JugglingEnv:
         self._step_count = torch.zeros(n, dtype=torch.long, device=self.device)
         self._episode_catches = torch.zeros(n, device=self.device)
         self.last_stacked = torch.zeros(n, dtype=torch.bool, device=self.device)
+        self._since_catch = torch.zeros(n, dtype=torch.long, device=self.device)
 
         self.reset()
 
@@ -274,6 +280,7 @@ class JugglingEnv:
         self._apex[envs_idx] = 0.0
         self._step_count[envs_idx] = 0
         self._episode_catches[envs_idx] = 0.0
+        self._since_catch[envs_idx] = 0
 
         tray_l_all = self._tray_center(self.robot_left, self.left_link7)
         tray_r_all = self._tray_center(self.robot_right, self.right_link7)
@@ -394,6 +401,8 @@ class JugglingEnv:
         dist_after = torch.linalg.norm(ball_pos - tray_tgt, dim=-1)
         self._prev_dist = dist_after
         streak_bonus = 1.0 + STREAK_GAIN * torch.clamp(self._episode_catches, max=STREAK_CAP)  # 成功前の連続成功数で決める
+        self._since_catch = torch.where(caught.any(dim=-1), torch.zeros_like(self._since_catch), self._since_catch + 1)
+        idle = (self._since_catch > IDLE_GRACE).float()
         self._episode_catches += caught.float().sum(-1)
 
         out = (
@@ -409,6 +418,7 @@ class JugglingEnv:
             + CATCH_BONUS * streak_bonus * caught.float().sum(-1)
             - DROP_PENALTY * dropped.float()
             - STACK_PENALTY * stacked.float()
+            - IDLE_PENALTY * idle
             - CLOSE_PENALTY * torch.clamp(self.min_tray_gap - tray_gap, min=0.0)
             - ACTION_PENALTY * (action**2).sum(-1)
         )

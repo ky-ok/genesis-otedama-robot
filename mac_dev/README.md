@@ -43,3 +43,20 @@ python train_local.py --n-balls 2 --steps 5000000 --resume ../runs/<前の実行
 ```
 
 報酬を変えたら、学習曲線だけでなく**動画で挙動を確認**してください(報酬の抜け道を使った「不正な」高スコアが出ることがあります)。
+
+## evaluate.py
+
+学習済み方策を、ランダムな初期状態から決定論的に走らせて評価します(落とさず続いた割合、落とすまでの時間、成功数、2個が同じお盆に載っている割合、じっとしていた時間の割合)。「落とさず続いた」だけだと、じっとしているだけの試行が混ざるため、成功が一定数以上ある「活動的」な試行の割合も出します。
+
+```bash
+python evaluate.py --model ../checkpoints/stage2_funnel_idle_130M.zip --n-balls 2
+```
+
+## make_video.py
+
+課題提出用の動画(1〜3分、2倍速まで)を撮影します。`--montage`を付けると、活動的に続いた区間を複数つないで指定の長さにします(連続で長く続く試行が見つからないとき用。つないだ動画であることを提出時に明記してください)。
+
+```bash
+python make_video.py --model ../checkpoints/stage2_funnel_idle_130M.zip --n-balls 2 \
+    --video-seconds 60 --speed 2 --montage --max-idle 4 --min-rate 4 --tries 400 --out ../videos/final.mp4
+```
