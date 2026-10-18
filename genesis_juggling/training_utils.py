@@ -50,6 +50,10 @@ class CheckpointVideoCallback(BaseCallback):
         record_video: bool = True,
         video_timeout: int = 900,
         gl_platform: str | None = "auto",
+        evaluate: bool = True,
+        eval_envs: int = 64,
+        eval_steps: int = 3000,
+        eval_timeout: int = 1800,
         verbose: int = 1,
     ):
         super().__init__(verbose)
@@ -63,6 +67,13 @@ class CheckpointVideoCallback(BaseCallback):
         if gl_platform == "auto":
             gl_platform = "osmesa" if sys.platform == "linux" else None
         self.gl_platform = gl_platform
+        # チェックポイントごとに、別プロセスで評価(描画なし)を行い、eval.json に保存する。
+        # 「60秒(eval_steps)活動的に続く割合」の推移が、学習がどこまで進んだかの一番の目安になる
+        self.evaluate = evaluate
+        self.eval_envs = eval_envs
+        self.eval_steps = eval_steps
+        self.eval_timeout = eval_timeout
+        self._eval_history: list[tuple[int, float, float]] = []  # (timesteps, 活動的に続いた割合, 落とすまでの平均秒)
 
         self._history: list[tuple[int, float, float, float]] = []  # (timesteps, step_reward, ep_len, ep_catches)
         self._ep_lens: list[float] = []
@@ -106,11 +117,50 @@ class CheckpointVideoCallback(BaseCallback):
         model_path = os.path.join(run_dir, f"model_{step}.zip")
         self.model.save(model_path)
         self._save_curves(run_dir)
+        if self.evaluate:
+            self._run_evaluation(model_path, run_dir, step)
+            self._save_curves(run_dir)  # 評価の点も含めて描き直す
         if self.record_video:
             self._save_rollout_video(model_path, run_dir, os.path.join(run_dir, f"rollout_{step}.mp4"))
 
         if self.verbose:
             print(f"[CheckpointVideoCallback] saved checkpoint/curves/video to {run_dir}", flush=True)
+
+    def _run_evaluation(self, model_path: str, run_dir: str, step: int) -> None:
+        cmd = [
+            sys.executable, "-m", "genesis_juggling.evaluation",
+            "--model", model_path,
+            "--n-balls", str(self.hyperparams.get("n_balls", 2)),
+            "--n-envs", str(self.eval_envs),
+            "--steps", str(self.eval_steps),
+            "--backend", "cpu" if gs.backend == gs.cpu else "gpu",
+            "--json",
+        ]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = REPO_ROOT + os.pathsep + env.get("PYTHONPATH", "")
+        result = None
+        try:
+            proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=self.eval_timeout, cwd=REPO_ROOT)
+            for line in proc.stdout.splitlines():
+                if line.startswith("EVAL_JSON "):
+                    result = json.loads(line[len("EVAL_JSON "):])
+            detail = f"returncode={proc.returncode}\n--- stdout ---\n{proc.stdout[-3000:]}\n--- stderr ---\n{proc.stderr[-3000:]}"
+        except subprocess.TimeoutExpired:
+            detail = f"timed out after {self.eval_timeout}s"
+        if result is None:
+            with open(os.path.join(run_dir, "eval_error.log"), "w") as f:
+                f.write(detail)
+            print(f"[CheckpointVideoCallback] WARNING: evaluation failed (training continues). See {run_dir}/eval_error.log", flush=True)
+            return
+        with open(os.path.join(run_dir, "eval.json"), "w") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        self._eval_history.append((step, result["active_survive_rate"], result["mean_seconds"]))
+        print(
+            f"[評価 {step:,} steps] {result['max_seconds']:.0f}秒 活動的に続いた割合 {result['active_survive_rate'] * 100:.0f}% / "
+            f"落とすまで平均 {result['mean_seconds']:.1f}秒 / 成功 {result['catches_per_10s']:.1f}回/10秒 / "
+            f"2個が同じお盆 {result['stacked_ratio'] * 100:.0f}% / じっとしている時間 {result['idle_ratio'] * 100:.0f}%",
+            flush=True,
+        )
 
     def _save_curves(self, run_dir: str) -> None:
         if not self._history:
@@ -122,12 +172,19 @@ class CheckpointVideoCallback(BaseCallback):
             writer.writerow(["timesteps", "mean_step_reward", "mean_episode_length", "mean_catches_per_episode"])
             writer.writerows(self._history)
 
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-        titles = ["mean reward per step", "mean episode length (max 500)", "mean catches per episode"]
-        for ax, col, title in zip(axes, (1, 2, 3), titles):
+        fig, axes = plt.subplots(1, 4, figsize=(20, 4))
+        titles = ["mean reward per step", "mean episode length (max 1500)", "mean catches per episode"]
+        for ax, col, title in zip(axes[:3], (1, 2, 3), titles):
             ax.plot(data[:, 0], data[:, col])
             ax.set_xlabel("timesteps")
             ax.set_title(title)
+        ax = axes[3]
+        if self._eval_history:
+            ev = np.array(self._eval_history, dtype=float)
+            ax.plot(ev[:, 0], ev[:, 1] * 100, marker="o")
+        ax.set_ylim(0, 100)
+        ax.set_xlabel("timesteps")
+        ax.set_title("eval: % of envs staying active for the whole window")
         fig.suptitle("Training curves")
         fig.tight_layout()
         fig.savefig(os.path.join(run_dir, "reward_curve.png"), dpi=110)

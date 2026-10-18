@@ -28,6 +28,7 @@ def main():
     import torch
     from stable_baselines3 import PPO
 
+    from genesis_juggling.checkpoint import predict
     from genesis_juggling.env import ACTION_DIM, JugglingEnv
 
     model = PPO.load(args.model, device="cpu") if args.model else None
@@ -36,7 +37,7 @@ def main():
     def policy_fn(obs_t):
         if model is None:
             return torch.rand((1, ACTION_DIM), device=env.device) * 2 - 1
-        action_np, _ = model.predict(obs_t.detach().cpu().numpy(), deterministic=True)
+        action_np = predict(model, obs_t.detach().cpu().numpy(), deterministic=True)
         return torch.as_tensor(action_np, dtype=torch.float32, device=env.device).reshape(1, ACTION_DIM)
 
     env.record_rollout(policy_fn, n_steps=args.steps, filename=args.out)

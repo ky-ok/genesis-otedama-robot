@@ -54,9 +54,9 @@ python evaluate.py --model ../checkpoints/stage2_funnel_idle_130M.zip --n-balls 
 
 ## make_video.py
 
-課題提出用の動画(1〜3分、2倍速まで)を撮影します。`--montage`を付けると、活動的に続いた区間を複数つないで指定の長さにします(連続で長く続く試行が見つからないとき用。つないだ動画であることを提出時に明記してください)。
+課題提出用の動画を撮影します。**既定は60秒・等速**(2026-10-18に2倍速をやめて、最低ラインの60秒を目標にした)。条件(落とさない・成功の間隔が`--max-idle`秒以内・成功が`--min-rate`回/10秒以上)を満たす試行を選んで撮ります(ベスト・オブ・N)。`--montage`で、連続で撮れないときに、活動的な区間をつないだ動画にもできます(つないだ動画であることを明記してください)。
 
 ```bash
 python make_video.py --model ../checkpoints/stage2_funnel_idle_130M.zip --n-balls 2 \
-    --video-seconds 60 --speed 2 --montage --max-idle 4 --min-rate 4 --tries 400 --out ../videos/final.mp4
+    --video-seconds 60 --speed 1 --max-idle 5 --min-rate 4 --tries 200 --out ../videos/final.mp4
 ```

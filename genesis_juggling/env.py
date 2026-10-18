@@ -25,7 +25,7 @@ from scipy.spatial.transform import Rotation
 import genesis as gs
 from genesis.ext import pyrender
 
-from .robot_asset import TRAY_XYZ, panda_with_tray_urdf
+from .robot_asset import TRAY_RPY, TRAY_XYZ, panda_with_tray_urdf
 
 # --- 配置 ---------------------------------------------------------------
 # 基準姿勢でのお盆中心は、アーム土台から+0.623m前方。お盆同士の間隔 = 2*(ARM_OFFSET-0.623)
@@ -40,7 +40,10 @@ PARKED_BALL_POS = (3.0, 3.0, 0.5)  # 使わない玉の置き場所(遠くへ退
 
 # --- 空間 ---------------------------------------------------------------
 OBS_PER_BALL = 10  # お盆(左)からの相対位置3 + お盆(右)からの相対位置3 + 速度3 + 目標フラグ1
-OBS_DIM = N_ARM_DOFS * 2 * 2 + 6 + OBS_PER_BALL * 2
+# 末尾に、お盆の傾き(法線)2x3 + お盆の速度2x3 を追加している。末尾なので、追加前の観測で学習した方策は、
+# 入力の重みをゼロで埋めれば同じ動作のまま引き継げる(training_utils / checkpoint.py)
+OBS_DIM_BASE = N_ARM_DOFS * 2 * 2 + 6 + OBS_PER_BALL * 2  # 54
+OBS_DIM = OBS_DIM_BASE + 12  # 66
 ACTION_DIM = N_ACTIVE * 2  # 左腕3 + 右腕3 の目標角度に対する増分
 
 MAX_DELTA = 0.1  # 1制御ステップあたりの関節目標角の最大変化量[rad]
@@ -69,6 +72,11 @@ STACK_XY = 0.09  # 2個の玉が「同じお盆に載っている」とみなす
 STACK_PENALTY = 0.05  # 2個が同じお盆に載っている間の1ステップあたりの減点。着地成功も認めない
 IDLE_GRACE = 150  # 最後の成功からこのステップ数(3秒)を超えて成功が無いと「じっとしている」とみなす
 IDLE_PENALTY = 0.05  # じっとしている間の1ステップあたりの減点。「落とさないが何もしない」停滞状態を避けさせる
+IDLE_ESCALATE = 4.0  # じっとしている時間が長いほど減点を重くする(IDLE_GRACEごとに+1倍、最大この倍率)
+STUCK_STEPS = 500  # 最後の成功からこのステップ数(10秒)成功が無いと「動かなくなった」として、落下と同じ重さの減点で打ち切る
+RESTART_AFTER = 300  # 最後の成功からこのステップ数(6秒)以上空いたあとの成功は「再開」とみなす
+RESTART_BONUS = 5.0  # 静止していたあとに、再び成功したときの追加報酬(静止中の減点を超えないので、わざと止まって稼ぐ得はない)
+SETTLED_OFFSET = 0.35  # 「静止状態から開始」のとき、お盆を水平に保ったまま動かす関節のずれの最大値[rad]
 STREAK_GAIN = 0.1  # 落とさず成功を重ねるごとに、着地成功の報酬を増やす割合(上限 STREAK_CAP 回分)
 STREAK_CAP = 10
 RESET_JOINT_NOISE = 0.03  # リセット時の関節角のばらつき[rad]
@@ -122,18 +130,32 @@ class JugglingEnv:
         max_episode_steps: int = MAX_EPISODE_STEPS,
         reset_noise: bool = True,
         realtime_factor: float = 1.0,
+        settled_prob: float = 0.0,
+        constraint_timeconst: float | None = None,
+        ball_friction: float | None = None,
+        robot_friction: float | None = None,
+        ball_rolling_friction: float | None = None,
     ):
         assert n_balls in (1, 2)
         self.max_episode_steps = max_episode_steps
         self.reset_noise = reset_noise
+        # 学習時に、お盆を様々な位置へ動かして玉を載せた「静止状態」から開始する割合。じっとして動かなくなる状態からの再開を練習させる
+        self.settled_prob = settled_prob
         self.n_envs = n_envs
         self.dt = dt
         self.n_balls = n_balls
         self.device = device if device is not None else gs.device
 
+        rigid_kwargs = {}
+        if constraint_timeconst is not None:
+            rigid_kwargs["constraint_timeconst"] = constraint_timeconst
+        if ball_rolling_friction is not None:
+            rigid_kwargs["enable_torsional_friction"] = True  # 転がり摩擦の有効化に必要
+            rigid_kwargs["enable_rolling_friction"] = True
         self.scene = gs.Scene(
             show_viewer=show_viewer,
             sim_options=gs.options.SimOptions(dt=dt),
+            rigid_options=gs.options.RigidOptions(**rigid_kwargs) if rigid_kwargs else None,
             # 動画撮影時の再生速度。2.0なら、実時間の2倍速で再生される動画になる(録画は1ステップに最大1フレーム)
             viewer_options=gs.options.ViewerOptions(realtime_factor=realtime_factor),
         )
@@ -143,21 +165,21 @@ class JugglingEnv:
         # 重力補償により、PD制御で腕が自重でたわまず、お盆が水平に保たれる
         self.robot_left = self.scene.add_entity(
             gs.morphs.URDF(file=urdf, pos=(-ARM_OFFSET, 0.0, 0.0), fixed=True),
-            material=gs.materials.Rigid(gravity_compensation=1.0),
+            material=gs.materials.Rigid(gravity_compensation=1.0, friction=robot_friction),
         )
         self.robot_right = self.scene.add_entity(
             gs.morphs.URDF(file=urdf, pos=(ARM_OFFSET, 0.0, 0.0), euler=(0.0, 0.0, 180.0), fixed=True),
-            material=gs.materials.Rigid(gravity_compensation=1.0),
+            material=gs.materials.Rigid(gravity_compensation=1.0, friction=robot_friction),
         )
 
         self.ball_a = self.scene.add_entity(
             gs.morphs.Sphere(radius=BALL_RADIUS, pos=(-0.25, 0.0, 0.64)),
-            material=gs.materials.Rigid(rho=300.0),
+            material=gs.materials.Rigid(rho=300.0, friction=ball_friction, friction_rolling=ball_rolling_friction),
             surface=gs.surfaces.Default(color=(0.9, 0.2, 0.2)),
         )
         self.ball_b = self.scene.add_entity(
             gs.morphs.Sphere(radius=BALL_RADIUS, pos=(0.25, 0.0, 0.64)),
-            material=gs.materials.Rigid(rho=300.0),
+            material=gs.materials.Rigid(rho=300.0, friction=ball_friction, friction_rolling=ball_rolling_friction),
             surface=gs.surfaces.Default(color=(0.2, 0.4, 0.9)),
         )
 
@@ -200,6 +222,8 @@ class JugglingEnv:
         self._ready = torch.tensor(READY_POSE, device=self.device, dtype=torch.float32)
         self._active = list(ACTIVE_JOINTS)
         self._tray_local = torch.tensor(TRAY_XYZ, device=self.device, dtype=torch.float32)
+        normal_local = Rotation.from_euler("xyz", TRAY_RPY).as_matrix()[:, 2]  # お盆の「上」向きの軸(手首リンク座標)
+        self._tray_normal_local = torch.tensor(normal_local, device=self.device, dtype=torch.float32)
         self._ball_active = torch.tensor([True, n_balls == 2], device=self.device)
         # カリキュラムで学習中に変更する(training_utils.GapCurriculumCallback)。評価・動画撮影では既定値のまま
         self.min_tray_gap = MIN_TRAY_GAP
@@ -217,14 +241,20 @@ class JugglingEnv:
         self._episode_catches = torch.zeros(n, device=self.device)
         self.last_stacked = torch.zeros(n, dtype=torch.bool, device=self.device)
         self._since_catch = torch.zeros(n, dtype=torch.long, device=self.device)
+        self._tray_prev_l = torch.zeros((n, 3), device=self.device)
+        self._tray_prev_r = torch.zeros((n, 3), device=self.device)
 
         self.reset()
 
     # ------------------------------------------------------------------
-    def _tray_center(self, robot, link7, envs_idx=None) -> torch.Tensor:
+    def _tray_pose(self, robot, link7, envs_idx=None):
+        """お盆の中心位置と、お盆の「上」向きの単位ベクトル(傾き)を返す。"""
         p7 = robot.get_links_pos(links_idx_local=[link7], envs_idx=envs_idx, relative=False)[:, 0]
         q7 = robot.get_links_quat(links_idx_local=[link7], envs_idx=envs_idx, relative=False)[:, 0]
-        return p7 + _quat_rotate(q7, self._tray_local)
+        return p7 + _quat_rotate(q7, self._tray_local), _quat_rotate(q7, self._tray_normal_local)
+
+    def _tray_center(self, robot, link7, envs_idx=None) -> torch.Tensor:
+        return self._tray_pose(robot, link7, envs_idx)[0]
 
     def _targets(self, off: torch.Tensor) -> torch.Tensor:
         target = self._ready.unsqueeze(0).repeat(off.shape[0], 1)
@@ -242,6 +272,14 @@ class JugglingEnv:
         scale = RESET_JOINT_NOISE if self.reset_noise else 0.0
         left_off = (torch.rand((n, N_ACTIVE), device=self.device) * 2 - 1) * scale
         right_off = (torch.rand((n, N_ACTIVE), device=self.device) * 2 - 1) * scale
+        if self.settled_prob > 0:
+            # 静止状態から開始: お盆を水平に保ったまま(Δq6 = Δq2 - Δq4)様々な位置へ動かし、そこに玉を載せて始める
+            settled = (torch.rand(n, device=self.device) < self.settled_prob).unsqueeze(-1)
+            for off in (left_off, right_off):
+                d2 = (torch.rand(n, device=self.device) * 2 - 1) * SETTLED_OFFSET
+                d4 = (torch.rand(n, device=self.device) * 2 - 1) * SETTLED_OFFSET
+                shift = torch.stack([d2, d4, d2 - d4], dim=-1)
+                off += torch.where(settled, shift, torch.zeros_like(shift))
         self._left_off[envs_idx] = left_off
         self._right_off[envs_idx] = right_off
 
@@ -277,6 +315,8 @@ class JugglingEnv:
             )
 
         self._tgt[envs_idx] = tgt
+        self._tray_prev_l[envs_idx] = tray_l
+        self._tray_prev_r[envs_idx] = tray_r
         self._apex[envs_idx] = 0.0
         self._step_count[envs_idx] = 0
         self._episode_catches[envs_idx] = 0.0
@@ -330,8 +370,12 @@ class JugglingEnv:
         right_q = self.robot_right.get_dofs_position(dofs_idx_local=self.right_dofs)
         right_dq = self.robot_right.get_dofs_velocity(dofs_idx_local=self.right_dofs)
 
-        tray_l = self._tray_center(self.robot_left, self.left_link7)
-        tray_r = self._tray_center(self.robot_right, self.right_link7)
+        tray_l, normal_l = self._tray_pose(self.robot_left, self.left_link7)
+        tray_r, normal_r = self._tray_pose(self.robot_right, self.right_link7)
+        vel_l = (tray_l - self._tray_prev_l) / self.dt
+        vel_r = (tray_r - self._tray_prev_r) / self.dt
+        self._tray_prev_l = tray_l
+        self._tray_prev_r = tray_r
 
         ball_pos = self._ball_pos()
         ball_vel = self._ball_vel()
@@ -346,7 +390,10 @@ class JugglingEnv:
         )
         per_ball = per_ball * self._ball_active.view(1, 2, 1)
 
-        return torch.cat([left_q, left_dq, right_q, right_dq, tray_l, tray_r, per_ball.flatten(1)], dim=-1)
+        return torch.cat(
+            [left_q, left_dq, right_q, right_dq, tray_l, tray_r, per_ball.flatten(1), normal_l, normal_r, vel_l, vel_r],
+            dim=-1,
+        )
 
     def _compute_reward(self, action: torch.Tensor):
         tray_l = self._tray_center(self.robot_left, self.left_link7)
@@ -401,8 +448,12 @@ class JugglingEnv:
         dist_after = torch.linalg.norm(ball_pos - tray_tgt, dim=-1)
         self._prev_dist = dist_after
         streak_bonus = 1.0 + STREAK_GAIN * torch.clamp(self._episode_catches, max=STREAK_CAP)  # 成功前の連続成功数で決める
-        self._since_catch = torch.where(caught.any(dim=-1), torch.zeros_like(self._since_catch), self._since_catch + 1)
-        idle = (self._since_catch > IDLE_GRACE).float()
+        any_caught = caught.any(dim=-1)
+        restart = any_caught & (self._since_catch > RESTART_AFTER)  # 長く静止したあとの成功
+        self._since_catch = torch.where(any_caught, torch.zeros_like(self._since_catch), self._since_catch + 1)
+        idle_level = torch.clamp(1.0 + (self._since_catch - IDLE_GRACE).float() / IDLE_GRACE, max=IDLE_ESCALATE)
+        idle = (self._since_catch > IDLE_GRACE).float() * idle_level
+        stuck = self._since_catch >= STUCK_STEPS
         self._episode_catches += caught.float().sum(-1)
 
         out = (
@@ -410,12 +461,13 @@ class JugglingEnv:
             | (ball_pos[:, :, 0].abs() > WORKSPACE_X)
             | (ball_pos[:, :, 1].abs() > WORKSPACE_Y)
         ) & self._ball_active.view(1, 2)
-        dropped = out.any(dim=-1)
+        dropped = out.any(dim=-1) | stuck  # 動かなくなった(長く成功が無い)場合も、落とした場合と同じく打ち切る
 
         reward = (
             W_PROGRESS * progress.sum(-1)
             + W_APEX * apex_gain.sum(-1)
             + CATCH_BONUS * streak_bonus * caught.float().sum(-1)
+            + RESTART_BONUS * restart.float()
             - DROP_PENALTY * dropped.float()
             - STACK_PENALTY * stacked.float()
             - IDLE_PENALTY * idle

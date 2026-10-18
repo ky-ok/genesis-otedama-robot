@@ -1,80 +1,16 @@
 """
-学習済み方策を、ランダムな初期状態から決定論的に走らせて評価する。
+学習済み方策を評価する(中身は genesis_juggling/evaluation.py)。
 
-各環境で「最初に玉を落とすまで」(最大 --steps ステップ、既定3000=60秒)を追い、以下を集計する:
-- 落とさずに最後まで続いた環境の割合
-- 落とすまでの時間(秒)の平均・中央値
-- 10秒あたりの着地成功数
-- 2個が同じお盆に載っていた時間の割合(「1個ずつ交差」できているかの指標)
-
-    python mac_dev/evaluate.py --model checkpoints/stage2_2balls_30M.zip --n-balls 2
+    python mac_dev/evaluate.py --model checkpoints/stage2_funnel_idle_130M.zip --n-balls 2
 """
 
-import argparse
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import genesis_juggling  # noqa: F401,E402
-
-import genesis as gs  # noqa: E402
-
-
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--model", required=True)
-    p.add_argument("--stochastic", action="store_true", help="学習時と同じ探索ノイズありで動かす(既定は決定論的)。決定論的だと静止状態にはまることがある")
-    p.add_argument("--n-balls", type=int, default=2, choices=[1, 2])
-    p.add_argument("--n-envs", type=int, default=64)
-    p.add_argument("--steps", type=int, default=3000)
-    p.add_argument("--min-rate", type=float, default=3.0, help="「活動的」とみなす成功数の下限[回/10秒]。じっとしているだけの方策を除くため")
-    a = p.parse_args()
-
-    gs.init(backend=gs.cpu, logging_level="error")
-
-    import numpy as np
-    import torch
-    from stable_baselines3 import PPO
-
-    from genesis_juggling.env import IDLE_GRACE, JugglingEnv
-
-    model = PPO.load(a.model, device="cpu")
-    env = JugglingEnv(n_envs=a.n_envs, n_balls=a.n_balls, max_episode_steps=10**9)
-    obs = env.reset()
-
-    alive = torch.ones(a.n_envs, dtype=torch.bool)
-    steps_alive = torch.zeros(a.n_envs)
-    catches = torch.zeros(a.n_envs)
-    stack_steps = torch.zeros(a.n_envs)
-    idle_steps = torch.zeros(a.n_envs)
-    for _ in range(a.steps):
-        action, _ = model.predict(obs.cpu().numpy(), deterministic=not a.stochastic)
-        obs, _, done, info = env.step(torch.as_tensor(action))
-        alive_now = alive & ~done.cpu()
-        steps_alive += alive.float()
-        stack_steps += (alive & env.last_stacked.cpu()).float()
-        idle_steps += (alive & (env._since_catch.cpu() > IDLE_GRACE)).float()
-        catches = torch.where(alive, info["catches"].cpu(), catches)
-        alive = alive_now
-        if not alive.any():
-            break
-
-    sec = steps_alive.numpy() * env.dt
-    full_mask = steps_alive >= a.steps - 1
-    full = full_mask.float().mean().item()
-    rate = (catches / (steps_alive * env.dt) * 10).numpy()  # 各環境の成功数[回/10秒]
-    active_full = (full_mask.numpy() & (rate >= a.min_rate)).mean()
-    print(f"環境数 {a.n_envs}, 最大 {a.steps * env.dt:.0f} 秒")
-    print(f"落とさず最後まで続いた割合: {full * 100:.0f}%")
-    print(f"  うち活動的(成功が{a.min_rate:.0f}回/10秒以上)に続いた割合: {active_full * 100:.0f}%  <- じっとしているだけの環境を除いた本当の指標")
-    print(f"じっとしていた(落とさず最後まで続いたが成功が少ない)環境: {int((full_mask.numpy() & (rate < a.min_rate)).sum())} / {a.n_envs}")
-    print(f"落とすまでの時間: 平均 {sec.mean():.1f} 秒 / 中央値 {np.median(sec):.1f} 秒")
-    print(f"じっとしていた時間の割合(最後の成功から{IDLE_GRACE * env.dt:.0f}秒超): {(idle_steps.sum() / steps_alive.sum() * 100).item():.0f}%")
-    print(f"着地成功: {(catches.sum() / steps_alive.sum() * 10 / env.dt).item():.2f} 回 / 10秒")
-    if a.n_balls == 2:
-        print(f"2個が同じお盆に載っていた時間の割合: {(stack_steps.sum() / steps_alive.sum() * 100).item():.0f}%")
-
+import genesis_juggling  # noqa: F401,E402  (最初にimportする: TensorFlow抑止)
+from genesis_juggling.evaluation import main  # noqa: E402
 
 if __name__ == "__main__":
     main()

@@ -12,8 +12,8 @@ from .env import ACTION_DIM, JugglingEnv, OBS_DIM
 
 
 class JugglingVecEnv(VecEnv):
-    def __init__(self, n_envs: int, dt: float = 0.02, n_balls: int = 2, device=None):
-        self.env = JugglingEnv(n_envs=n_envs, dt=dt, n_balls=n_balls, device=device)
+    def __init__(self, n_envs: int, dt: float = 0.02, n_balls: int = 2, device=None, **env_kwargs):
+        self.env = JugglingEnv(n_envs=n_envs, dt=dt, n_balls=n_balls, device=device, **env_kwargs)
 
         observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32)
         action_space = spaces.Box(low=-1.0, high=1.0, shape=(ACTION_DIM,), dtype=np.float32)

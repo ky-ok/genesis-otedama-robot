@@ -28,8 +28,8 @@ def main():
     p.add_argument("--model", required=True)
     p.add_argument("--stochastic", action="store_true", help="学習時と同じ探索ノイズありで動かす(既定は決定論的)。決定論的だと静止状態にはまることがある")
     p.add_argument("--n-balls", type=int, default=2, choices=[1, 2])
-    p.add_argument("--video-seconds", type=float, default=120.0, help="出来上がる動画の長さ[秒]。課題の条件は60〜180秒")
-    p.add_argument("--speed", type=float, default=2.0, help="再生速度。課題の条件は2倍速まで")
+    p.add_argument("--video-seconds", type=float, default=60.0, help="出来上がる動画の長さ[秒]。課題の条件は60〜180秒(最低ラインの60秒を目標にする)")
+    p.add_argument("--speed", type=float, default=1.0, help="再生速度。既定は等速(2倍速はやめた)。課題の条件は2倍速まで")
     p.add_argument("--montage", action="store_true", help="連続で撮れないとき用: 活動的に続いた区間(落とす直前まで)を複数つないで、指定の長さにする")
     p.add_argument("--clip-min", type=float, default=12.0, help="--montage で採用する区間の最短[シミュレーション秒]")
     p.add_argument("--tries", type=int, default=100, help="条件を満たす初期状態を探す回数")
@@ -49,6 +49,7 @@ def main():
     import torch
     from stable_baselines3 import PPO
 
+    from genesis_juggling.checkpoint import predict
     from genesis_juggling.env import JugglingEnv
 
     dt = 0.02
@@ -62,7 +63,7 @@ def main():
     env = JugglingEnv(n_envs=1, dt=dt, n_balls=a.n_balls, camera=True, max_episode_steps=10**9, realtime_factor=a.speed)
 
     def act(obs):
-        action, _ = model.predict(obs.cpu().numpy(), deterministic=not a.stochastic)
+        action = predict(model, obs.cpu().numpy(), deterministic=not a.stochastic)
         return torch.as_tensor(action, dtype=torch.float32).reshape(1, -1)
 
     def attempt(path):

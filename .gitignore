@@ -11,6 +11,7 @@ venv/
 # Large / generated artifacts
 checkpoints/*
 !checkpoints/.gitkeep
+!checkpoints/stage2_funnel_idle_130M.zip
 videos/*.mp4
 videos/*.gif
 !videos/.gitkeep
