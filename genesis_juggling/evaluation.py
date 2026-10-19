@@ -29,16 +29,21 @@ def evaluate_policy(
     alive = torch.ones(n_envs, dtype=torch.bool)
     steps_alive = torch.zeros(n_envs)
     catches = torch.zeros(n_envs)
+    catches_a = torch.zeros(n_envs)
+    catches_b = torch.zeros(n_envs)
     stack_steps = torch.zeros(n_envs)
     idle_steps = torch.zeros(n_envs)
     for _ in range(steps):
         action = predict(model, obs.cpu().numpy(), deterministic=not stochastic)
-        obs, _, done, info = env.step(torch.as_tensor(action))
+        # 環境がGPU上にあるので、行動も同じデバイスに置く(CPUのままだとColabで 'two devices' エラーになった)
+        obs, _, done, info = env.step(torch.as_tensor(action, dtype=torch.float32, device=env.device))
         alive_now = alive & ~done.cpu()
         steps_alive += alive.float()
         stack_steps += (alive & env.last_stacked.cpu()).float()
         idle_steps += (alive & (env._since_catch.cpu() > IDLE_GRACE)).float()
         catches = torch.where(alive, info["catches"].cpu(), catches)
+        catches_a = torch.where(alive, info["catches_a"].cpu(), catches_a)
+        catches_b = torch.where(alive, info["catches_b"].cpu(), catches_b)
         alive = alive_now
         if not alive.any():
             break
@@ -56,6 +61,12 @@ def evaluate_policy(
         "mean_seconds": float(sec.mean()),
         "median_seconds": float(np.median(sec)),
         "catches_per_10s": float(catches.sum().item() / total * 10 / env.dt),
+        "red_catches_per_10s": float(catches_a.sum().item() / total * 10 / env.dt),
+        "blue_catches_per_10s": float(catches_b.sum().item() / total * 10 / env.dt),
+        # 青い玉の成功の割合。0%に近いと、青を交換できていない(赤だけ往復している)
+        "blue_share": float(catches_b.sum().item() / max(catches.sum().item(), 1e-9)) if n_balls == 2 else 0.0,
+        # 両方の玉が、このエピソードで3回以上成功した環境の割合
+        "both_balls_rate": float(((catches_a >= 3) & (catches_b >= 3)).float().mean().item()) if n_balls == 2 else 0.0,
         "stacked_ratio": float(stack_steps.sum().item() / total) if n_balls == 2 else 0.0,
         "idle_ratio": float(idle_steps.sum().item() / total),
         "min_rate": min_rate,
@@ -74,6 +85,10 @@ def format_report(r: dict, n_balls: int) -> str:
         f"着地成功: {r['catches_per_10s']:.2f} 回 / 10秒",
     ]
     if n_balls == 2:
+        lines.append(
+            f"  玉ごとの成功: 赤 {r['red_catches_per_10s']:.2f} / 青 {r['blue_catches_per_10s']:.2f} 回/10秒"
+            f"  (青の割合 {r['blue_share'] * 100:.0f}%, 両方の玉が3回以上成功した環境 {r['both_balls_rate'] * 100:.0f}%)  <- 青が0%に近いなら、青を交換できていない"
+        )
         lines.append(f"2個が同じお盆に載っていた時間の割合: {r['stacked_ratio'] * 100:.0f}%")
     return "\n".join(lines)
 
@@ -87,6 +102,7 @@ def main():
     p.add_argument("--min-rate", type=float, default=3.0, help="「活動的」とみなす成功数の下限[回/10秒]")
     p.add_argument("--stochastic", action="store_true", help="学習時と同じ探索ノイズありで動かす(既定は決定論的)")
     p.add_argument("--backend", choices=["cpu", "gpu"], default="cpu")
+    p.add_argument("--focus-obs", action="store_true", help="観測の玉の順番を並べ替える設定(学習時と同じにする)")
     p.add_argument("--ball-rolling-friction", type=float, default=None, help="玉の転がり摩擦(物理パラメータの確認用)")
     p.add_argument("--json", action="store_true", help="結果をJSON1行で出力する(学習中の自動評価用)")
     a = p.parse_args()
@@ -99,6 +115,8 @@ def main():
 
     model = PPO.load(a.model, device="cpu")
     env_kwargs = {} if a.ball_rolling_friction is None else {"ball_rolling_friction": a.ball_rolling_friction}
+    if a.focus_obs:
+        env_kwargs["focus_obs"] = True
     result = evaluate_policy(model, a.n_balls, a.n_envs, a.steps, a.min_rate, a.stochastic, env_kwargs)
     if a.json:
         print("EVAL_JSON " + json.dumps(result))

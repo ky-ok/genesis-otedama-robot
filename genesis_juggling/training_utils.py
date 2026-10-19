@@ -75,9 +75,12 @@ class CheckpointVideoCallback(BaseCallback):
         self.eval_timeout = eval_timeout
         self._eval_history: list[tuple[int, float, float]] = []  # (timesteps, 活動的に続いた割合, 落とすまでの平均秒)
 
-        self._history: list[tuple[int, float, float, float]] = []  # (timesteps, step_reward, ep_len, ep_catches)
+        # (timesteps, step_reward, ep_len, ep_catches, ep_catches_red, ep_catches_blue)
+        self._history: list[tuple[int, float, float, float, float, float]] = []
         self._ep_lens: list[float] = []
         self._ep_catches: list[float] = []
+        self._ep_catches_a: list[float] = []
+        self._ep_catches_b: list[float] = []
         self._last_save_step = 0
 
     def _on_training_start(self) -> None:
@@ -92,18 +95,26 @@ class CheckpointVideoCallback(BaseCallback):
                 self._ep_lens.append(float(episode["l"]))
             if "episode_catches" in info:
                 self._ep_catches.append(float(info["episode_catches"]))
+                self._ep_catches_a.append(float(info.get("episode_catches_a", float("nan"))))
+                self._ep_catches_b.append(float(info.get("episode_catches_b", float("nan"))))
         return True
 
     def _on_rollout_end(self) -> None:
         step_reward = float(self.model.rollout_buffer.rewards.mean())
         ep_len = float(np.mean(self._ep_lens)) if self._ep_lens else float("nan")
         ep_catches = float(np.mean(self._ep_catches)) if self._ep_catches else float("nan")
+        ep_a = float(np.mean(self._ep_catches_a)) if self._ep_catches_a else float("nan")
+        ep_b = float(np.mean(self._ep_catches_b)) if self._ep_catches_b else float("nan")
         self._ep_lens.clear()
         self._ep_catches.clear()
-        self._history.append((self.num_timesteps, step_reward, ep_len, ep_catches))
+        self._ep_catches_a.clear()
+        self._ep_catches_b.clear()
+        self._history.append((self.num_timesteps, step_reward, ep_len, ep_catches, ep_a, ep_b))
 
         if not np.isnan(ep_catches):
             self.logger.record("juggling/ep_catches", ep_catches)
+            self.logger.record("juggling/ep_catches_red", ep_a)
+            self.logger.record("juggling/ep_catches_blue", ep_b)
 
         if self.num_timesteps - self._last_save_step >= self.save_freq:
             self._last_save_step = self.num_timesteps
@@ -136,6 +147,8 @@ class CheckpointVideoCallback(BaseCallback):
             "--backend", "cpu" if gs.backend == gs.cpu else "gpu",
             "--json",
         ]
+        if self.hyperparams.get("focus_obs"):
+            cmd.append("--focus-obs")
         env = dict(os.environ)
         env["PYTHONPATH"] = REPO_ROOT + os.pathsep + env.get("PYTHONPATH", "")
         result = None
@@ -169,15 +182,20 @@ class CheckpointVideoCallback(BaseCallback):
 
         with open(os.path.join(run_dir, "metrics.csv"), "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["timesteps", "mean_step_reward", "mean_episode_length", "mean_catches_per_episode"])
+            writer.writerow(
+                ["timesteps", "mean_step_reward", "mean_episode_length", "mean_catches_per_episode", "mean_catches_red", "mean_catches_blue"]
+            )
             writer.writerows(self._history)
 
         fig, axes = plt.subplots(1, 4, figsize=(20, 4))
-        titles = ["mean reward per step", "mean episode length (max 1500)", "mean catches per episode"]
+        titles = ["mean reward per step", "mean episode length (max 1500)", "mean catches per episode (total / red / blue)"]
         for ax, col, title in zip(axes[:3], (1, 2, 3), titles):
-            ax.plot(data[:, 0], data[:, col])
+            ax.plot(data[:, 0], data[:, col], color="black" if col == 3 else None, label="total")
             ax.set_xlabel("timesteps")
             ax.set_title(title)
+        axes[2].plot(data[:, 0], data[:, 4], color="red", label="red ball")
+        axes[2].plot(data[:, 0], data[:, 5], color="blue", label="blue ball")
+        axes[2].legend()
         ax = axes[3]
         if self._eval_history:
             ev = np.array(self._eval_history, dtype=float)
@@ -208,6 +226,8 @@ class CheckpointVideoCallback(BaseCallback):
             "--n-balls",
             str(self.hyperparams.get("n_balls", 2)),
         ]
+        if self.hyperparams.get("focus_obs"):
+            cmd.append("--focus-obs")
         env = dict(os.environ)
         env["PYTHONPATH"] = REPO_ROOT + os.pathsep + env.get("PYTHONPATH", "")
         if self.gl_platform:

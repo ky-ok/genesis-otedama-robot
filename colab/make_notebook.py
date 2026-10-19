@@ -32,14 +32,14 @@ cells = [
 
 **このノートブックの役割**: 学習(GPU)と、チェックポイントごとの自動評価。動画の撮影はMacで行うのが確実です（下の「学習のあと」を参照）。
 
-**目標**: 落とさず、じっとせず、**60秒間続ける**こと。進み具合は、学習中に自動で出る
-`[評価 ... steps] 60秒 活動的に続いた割合 ○%` が一番の目安です（動画や報酬だけだと、じっとしているだけの試行に騙されます）。
+**目標**: 赤と青の**両方の玉**を左右に受け渡し、落とさず、じっとせず、**60秒間続ける**こと。進み具合は、学習中に自動で出る
+`[評価 ... steps] ... 玉ごとの成功 赤 ○ / 青 ○ (青の割合 ○%)` と `60秒 活動的に続いた割合 ○%` が目安です。
+**青の割合が0%に近い**と、青を交換できていません(2026-10-19にそうなっていた)。動画や報酬だけだと、赤だけ往復している状態に気づけません。
 
 **使い方**
 1. メニューの「ランタイム」→「ランタイムのタイプを変更」で **GPU** を選択してください
 2. 上から順にセルを実行してください。**「2.5 速度測定」の結果を見て、4.の `N_ENVS` と `total_timesteps` を決めます**
-3. Macで学習したモデル(`checkpoints/stage2_funnel_idle_130M.zip`)は、リポジトリに入っているので、自動で引き継がれます
-   (観測の次元が増えているため、新しい入力の重みをゼロで埋めて引き継ぎます。最初は元の方策と同じ動作です)
+3. 再開元は、4.の `RESUME_SOURCE` で選びます(既定は、リポジトリに入っている、青の交換を学習し始めたモデル)
 4. Google Driveの出力フォルダ(`genesis_otedama/runs/<日時>/`)に、`step_*/`ごとに
    `model_*.zip`・`reward_curve.png`(4枚組)・`eval.json`(自動評価)・`rollout_*.mp4`・`metrics.csv` が保存されます
 5. 相談するときは、**そのフォルダをまるごとClaudeにアップロード**してください
@@ -203,6 +203,8 @@ print("動画あり" if os.path.exists("/content/video_check.mp4") else "動画�
 - `N_ENVS` は2.5の速度測定を見て決めます。`batch_size` は `N_ENVS × n_steps` の約1/4が目安で、自動で計算します。
 - 続きから学習するときは、探索ノイズが枯れていることが多いので、`reset_std`(ノイズの大きさを戻す)と`ent_coef`(探索の促し)を入れ、学習率は低め(1e-4)にしてあります。
   (Macでの比較: 学習率1e-4・ノイズ0.10の設定が、3e-4・0.15より、成功回数・持続とも良かった)
+- `focus_obs`: 方策に見せる玉の順番を「飛んでいる玉・放置されている玉が先頭」に並べ替えます。赤と青は物理的に同じなので、覚えた「先頭の玉の交換」を青にも使わせるための工夫です(これで青の割合が1%→約40%に上がりました)。**学習・評価・動画で同じ設定にします**(自動で揃います)。
+- 玉ごとに「最後の成功から10秒」成功がないとエピソードが打ち切られ(減点)、青を置きっぱなしにすると損をします。
 - `settled_prob`: 静止状態(お盆を様々な位置へ動かして玉を載せた状態)から開始する割合。じっとして動かなくなった状態から、再び投げ始める練習になります。
 """
     ),
@@ -217,6 +219,8 @@ HYPERPARAMS = {
     "dt": 0.02,
     "n_balls": 1 if START_FRESH else 2,    # 最初から学習するときは、玉1個→うまくいったら2個の段階学習
     "settled_prob": 0.5,    # 静止状態から開始する割合(0で無効)
+    "focus_obs": True,      # 玉の順番を並べ替えて方策に見せる(青の交換のために必要。学習・評価・動画で同じにする)
+    "ball_mix": None,       # エピソードごとに使う玉を混ぜる割合 (赤だけ, 青だけ, 両方)。試したが効果なし(既存のスキルが崩れた)ので使わない
     "ball_rolling_friction": None,  # 玉の転がり摩擦。引き継ぎ学習では変えない(変えると既存モデルが崩れた)。新規学習で試すなら 0.01
     # PPO
     "learning_rate": 3e-4 if START_FRESH else 1e-4,  # 続きから学習するときは低め(穏やかに). 3e-4だと引き継いだ方策が崩れやすかった
@@ -261,13 +265,35 @@ from genesis_juggling.training_utils import CheckpointVideoCallback, GapCurricul
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import VecMonitor
 
-MAC_CKPT = f"{REPO_DIR}/checkpoints/stage2_funnel_idle_130M.zip"
-RESUME_FROM = None if START_FRESH else MAC_CKPT  # 別のチェックポイントから再開するときは、ここを書き換える
+import glob
+
+# 再開元の選択:
+#   "repo"         : リポジトリに入っている、青の交換を学習し始めたモデル(既定)
+#   "drive_latest" : Google Drive上の、直近の学習(runs/*)のモデル。前回の続きから学習したいとき
+#   "path"         : RESUME_PATH に書いたチェックポイント
+RESUME_SOURCE = "repo"
+RESUME_PATH = ""
+REPO_CKPT = f"{REPO_DIR}/checkpoints/stage2_focus_adapted.zip"
+
+if START_FRESH:
+    RESUME_FROM = None
+elif RESUME_SOURCE == "drive_latest":
+    runs = sorted(glob.glob("/content/drive/MyDrive/genesis_otedama/runs/*/model_final.zip")
+                  or glob.glob("/content/drive/MyDrive/genesis_otedama/runs/*/step_*/model_*.zip"))
+    if not runs:
+        raise FileNotFoundError("Drive上に前回の学習(runs/*)が見つかりません。RESUME_SOURCE を変えてください。")
+    RESUME_FROM = runs[-1]
+elif RESUME_SOURCE == "path":
+    RESUME_FROM = RESUME_PATH
+else:
+    RESUME_FROM = REPO_CKPT
 if RESUME_FROM is not None and not os.path.exists(RESUME_FROM):
     raise FileNotFoundError(f"{RESUME_FROM} がありません。`git pull` を実行したか、パスを確認してください。")
 print("続きから:" if RESUME_FROM else "最初から学習します", RESUME_FROM or "")
 
-env_kwargs = {"settled_prob": HYPERPARAMS["settled_prob"]}
+env_kwargs = {"settled_prob": HYPERPARAMS["settled_prob"], "focus_obs": HYPERPARAMS["focus_obs"]}
+if HYPERPARAMS["ball_mix"] is not None:
+    env_kwargs["ball_mix"] = tuple(HYPERPARAMS["ball_mix"])
 if HYPERPARAMS["ball_rolling_friction"] is not None:
     env_kwargs["ball_rolling_friction"] = HYPERPARAMS["ball_rolling_friction"]
 
@@ -337,7 +363,8 @@ print("Saved final model to", f"{OUTPUT_DIR}/model_final.zip")
 
 r = subprocess.run(
     [sys.executable, "-m", "genesis_juggling.evaluation", "--model", f"{OUTPUT_DIR}/model_final.zip",
-     "--n-balls", str(HYPERPARAMS["n_balls"]), "--n-envs", "128", "--steps", "3000", "--backend", "gpu"],
+     "--n-balls", str(HYPERPARAMS["n_balls"]), "--n-envs", "128", "--steps", "3000", "--backend", "gpu"]
+    + (["--focus-obs"] if HYPERPARAMS["focus_obs"] else []),
     env=dict(os.environ, PYTHONPATH=REPO_DIR), capture_output=True, text=True, cwd=REPO_DIR, timeout=3600,
 )
 print(r.stdout[-2000:] if r.returncode == 0 else r.stderr[-2000:])
@@ -350,8 +377,10 @@ print(r.stdout[-2000:] if r.returncode == 0 else r.stderr[-2000:])
 1. Google Driveの `genesis_otedama/runs/<日時>/model_final.zip` (または評価が一番良かった `step_*/model_*.zip`) をMacの `checkpoints/` に置く
 2. Macで、60秒・等速・連続の動画を撮る（描画を伴う撮影はMacが確実です）:
 
+(`--focus-obs` は、学習で `focus_obs=True` にしたときに付けます)
+
 ```bash
-python mac_dev/make_video.py --model checkpoints/model_final.zip --n-balls 2 \\
+python mac_dev/make_video.py --model checkpoints/model_final.zip --n-balls 2 --focus-obs \\
     --video-seconds 60 --speed 1 --max-idle 5 --min-rate 4 --tries 200 --out videos/final.mp4
 ```
 """

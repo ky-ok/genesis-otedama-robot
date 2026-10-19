@@ -37,11 +37,15 @@ class JugglingVecEnv(VecEnv):
             terminal_obs_np = self._to_numpy(obs)
             truncated_np = env_info["truncated"].detach().cpu().numpy()
             catches_np = env_info["catches"].detach().cpu().numpy()
+            catches_a_np = env_info["catches_a"].detach().cpu().numpy()
+            catches_b_np = env_info["catches_b"].detach().cpu().numpy()
             for i in done_idx.tolist():
                 infos[i]["terminal_observation"] = terminal_obs_np[i]
                 # 時間切れ(truncated)は失敗ではないので、SB3が価値をブートストラップできるように伝える
                 infos[i]["TimeLimit.truncated"] = bool(truncated_np[i])
                 infos[i]["episode_catches"] = float(catches_np[i])
+                infos[i]["episode_catches_a"] = float(catches_a_np[i])
+                infos[i]["episode_catches_b"] = float(catches_b_np[i])
 
             reset_obs = self.env.reset(envs_idx=done_idx)
             obs = obs.clone()

@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--backend", choices=["cpu", "gpu"], default="gpu")
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--n-balls", type=int, default=2)
+    parser.add_argument("--focus-obs", action="store_true")
     args = parser.parse_args()
 
     import genesis as gs
@@ -32,7 +33,7 @@ def main():
     from genesis_juggling.env import ACTION_DIM, JugglingEnv
 
     model = PPO.load(args.model, device="cpu") if args.model else None
-    env = JugglingEnv(n_envs=1, dt=args.dt, n_balls=args.n_balls, camera=True)
+    env = JugglingEnv(n_envs=1, dt=args.dt, n_balls=args.n_balls, camera=True, focus_obs=args.focus_obs)
 
     def policy_fn(obs_t):
         if model is None:

@@ -12,6 +12,7 @@ venv/
 checkpoints/*
 !checkpoints/.gitkeep
 !checkpoints/stage2_funnel_idle_130M.zip
+!checkpoints/stage2_focus_adapted.zip
 videos/*.mp4
 videos/*.gif
 !videos/.gitkeep

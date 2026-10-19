@@ -39,6 +39,8 @@ def main():
     p.add_argument("--gap-fraction", type=float, default=0.6, help="学習全体のこの割合の時点で最終値にする")
     p.add_argument("--reset-std", type=float, default=None, help="続きから学習するとき、行動ノイズの標準偏差をこの値に戻す(探索が枯れたとき用。例 0.15)")
     p.add_argument("--settled-prob", type=float, default=0.5, help="静止状態(お盆を動かして玉を載せた状態)から開始する割合")
+    p.add_argument("--ball-mix", type=float, nargs=3, default=None, metavar=("A_ONLY", "B_ONLY", "BOTH"), help="エピソードごとに使う玉を混ぜる割合(赤だけ, 青だけ, 両方)。例: 0.25 0.25 0.5。青を交換できないときの探索のきっかけになる")
+    p.add_argument("--focus-obs", action="store_true", help="観測の玉の順番を「飛んでいる玉・放置されている玉が先頭」に並べ替える。青を交換できないとき用。学習・評価・動画で同じ設定にする")
     p.add_argument("--ball-rolling-friction", type=float, default=None, help="玉の転がり摩擦(既存モデルの引き継ぎでは変えない方がよい)")
     p.add_argument("--resume", default=None, help="続きから学習するチェックポイント(.zip)")
     p.add_argument("--no-video", action="store_true")
@@ -75,6 +77,8 @@ def main():
         "log_std_init": a.log_std_init,
         "reset_std": a.reset_std,
         "settled_prob": a.settled_prob,
+        "ball_mix": a.ball_mix,
+        "focus_obs": a.focus_obs,
         "ball_rolling_friction": a.ball_rolling_friction,
         "net_arch": [256, 256],
         "gap_start": a.gap_start,
@@ -87,6 +91,10 @@ def main():
     print(json.dumps(hyper, indent=2, ensure_ascii=False))
 
     env_kwargs = {"settled_prob": a.settled_prob}
+    if a.ball_mix is not None:
+        env_kwargs["ball_mix"] = tuple(a.ball_mix)
+    if a.focus_obs:
+        env_kwargs["focus_obs"] = True
     if a.ball_rolling_friction is not None:
         env_kwargs["ball_rolling_friction"] = a.ball_rolling_friction
     vec_env = VecMonitor(JugglingVecEnv(n_envs=a.n_envs, dt=hyper["dt"], n_balls=a.n_balls, **env_kwargs))

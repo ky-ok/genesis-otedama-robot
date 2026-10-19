@@ -27,6 +27,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True)
     p.add_argument("--stochastic", action="store_true", help="学習時と同じ探索ノイズありで動かす(既定は決定論的)。決定論的だと静止状態にはまることがある")
+    p.add_argument("--focus-obs", action="store_true", help="学習時と同じ設定にする(観測の玉の順番の並べ替え)")
     p.add_argument("--n-balls", type=int, default=2, choices=[1, 2])
     p.add_argument("--video-seconds", type=float, default=60.0, help="出来上がる動画の長さ[秒]。課題の条件は60〜180秒(最低ラインの60秒を目標にする)")
     p.add_argument("--speed", type=float, default=1.0, help="再生速度。既定は等速(2倍速はやめた)。課題の条件は2倍速まで")
@@ -34,6 +35,7 @@ def main():
     p.add_argument("--clip-min", type=float, default=12.0, help="--montage で採用する区間の最短[シミュレーション秒]")
     p.add_argument("--tries", type=int, default=100, help="条件を満たす初期状態を探す回数")
     p.add_argument("--max-idle", type=float, default=8.0, help="採用する試行で、成功と成功の間に空いてよい最大秒数。じっとしている時間が長い試行を除く")
+    p.add_argument("--min-each-rate", type=float, default=1.5, help="2個のとき、採用する試行で、赤と青それぞれに必要な成功数の下限[回/10秒]。片方の玉だけの往復を除く")
     p.add_argument("--min-rate", type=float, default=3.0, help="採用する試行の成功数の下限[回/10秒]。じっとしているだけの試行を除く")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "..", "videos", "final.mp4"))
@@ -60,7 +62,7 @@ def main():
     print(f"撮影: シミュレーション {steps * dt:.0f}秒分 → 動画 約{steps * dt / a.speed:.0f}秒 ({a.speed}倍速, {fps:.0f}fps)")
 
     model = PPO.load(a.model, device="cpu")
-    env = JugglingEnv(n_envs=1, dt=dt, n_balls=a.n_balls, camera=True, max_episode_steps=10**9, realtime_factor=a.speed)
+    env = JugglingEnv(n_envs=1, dt=dt, n_balls=a.n_balls, camera=True, max_episode_steps=10**9, realtime_factor=a.speed, focus_obs=a.focus_obs)
 
     def act(obs):
         action = predict(model, obs.cpu().numpy(), deterministic=not a.stochastic)
@@ -79,7 +81,7 @@ def main():
                 survived = t
                 break
         env.cam.stop_recording()
-        return survived, float(env._episode_catches[0]), max_gap * dt
+        return survived, float(env._episode_catches[0]), max_gap * dt, env._ball_catches[0].tolist()
 
     def fallback(path):
         """最後まで続く試行が無かったとき用: 落としてもリセットして最後まで撮る。"""
@@ -162,10 +164,11 @@ def main():
     clean = False
     need_catches = a.min_rate * steps * dt / 10
     for i in range(a.tries):
-        length, catches, max_gap = attempt(tmp)
-        active = catches >= need_catches and max_gap <= a.max_idle
-        note = "" if length < steps else ("  <- 採用" if active else f"  <- 落とさなかったが成功が少ない(じっとしている)ので不採用(じっとしている時間が長い)")
-        print(f"  試行 {i + 1}/{a.tries}: {length * dt:.1f}秒 続いた, 成功 {catches:.0f}回, 成功の最大間隔 {max_gap:.0f}秒{note}", flush=True)
+        length, catches, max_gap, each = attempt(tmp)
+        need_each = a.min_each_rate * steps * dt / 10 if a.n_balls == 2 else 0.0
+        active = catches >= need_catches and max_gap <= a.max_idle and min(each) >= need_each if a.n_balls == 2 else catches >= need_catches and max_gap <= a.max_idle
+        note = "" if length < steps else ("  <- 採用" if active else "  <- 落とさなかったが、成功が少ない/間隔が長い/片方の玉しか交換していないので不採用")
+        print(f"  試行 {i + 1}/{a.tries}: {length * dt:.1f}秒 続いた, 成功 {catches:.0f}回(赤{each[0]:.0f}/青{each[1]:.0f}), 成功の最大間隔 {max_gap:.0f}秒{note}", flush=True)
         if length >= steps and active:
             os.replace(tmp, a.out)
             clean = True

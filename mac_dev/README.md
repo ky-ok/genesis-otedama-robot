@@ -49,7 +49,7 @@ python train_local.py --n-balls 2 --steps 5000000 --resume ../runs/<前の実行
 学習済み方策を、ランダムな初期状態から決定論的に走らせて評価します(落とさず続いた割合、落とすまでの時間、成功数、2個が同じお盆に載っている割合、じっとしていた時間の割合)。「落とさず続いた」だけだと、じっとしているだけの試行が混ざるため、成功が一定数以上ある「活動的」な試行の割合も出します。
 
 ```bash
-python evaluate.py --model ../checkpoints/stage2_funnel_idle_130M.zip --n-balls 2
+python evaluate.py --model ../checkpoints/stage2_focus_adapted.zip --n-balls 2 --focus-obs
 ```
 
 ## make_video.py
@@ -57,6 +57,10 @@ python evaluate.py --model ../checkpoints/stage2_funnel_idle_130M.zip --n-balls 
 課題提出用の動画を撮影します。**既定は60秒・等速**(2026-10-18に2倍速をやめて、最低ラインの60秒を目標にした)。条件(落とさない・成功の間隔が`--max-idle`秒以内・成功が`--min-rate`回/10秒以上)を満たす試行を選んで撮ります(ベスト・オブ・N)。`--montage`で、連続で撮れないときに、活動的な区間をつないだ動画にもできます(つないだ動画であることを明記してください)。
 
 ```bash
-python make_video.py --model ../checkpoints/stage2_funnel_idle_130M.zip --n-balls 2 \
-    --video-seconds 60 --speed 1 --max-idle 5 --min-rate 4 --tries 200 --out ../videos/final.mp4
+python make_video.py --model ../checkpoints/stage2_focus_adapted.zip --n-balls 2 --focus-obs \
+    --video-seconds 60 --speed 1 --max-idle 5 --min-rate 6 --min-each-rate 2 --tries 250 --out ../videos/final.mp4
 ```
+
+## 青い玉の交換(2026-10-19)
+
+`--focus-obs` は、方策に見せる玉の順番を「飛んでいる玉・放置されている玉が先頭」に並べ替える設定です。学習・評価・動画で同じにしてください。`evaluate.py` は、玉ごとの成功数と「青の割合」を出します(0%に近いと、青を交換できていません)。
