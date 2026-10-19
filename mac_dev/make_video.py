@@ -18,6 +18,8 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+print("起動中です(初回はファイルの読み込みで最大1分ほどかかります。止まっていません)...", flush=True)
+
 import genesis_juggling  # noqa: F401,E402
 
 import genesis as gs  # noqa: E402
